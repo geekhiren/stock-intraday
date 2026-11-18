@@ -1,0 +1,40 @@
+{
+  "source": "Spec section 15 and Angel One public NSE Equity F&O Options calculator read on 2026-11-18",
+  "calculator_url": "https://www.angelone.in/calculators/brokerage-calculator",
+  "calculator_matching_exchange_including_ipft_rate": "0.0003552",
+  "option_token": "42544",
+  "buy_price": "120",
+  "sell_price": "130",
+  "cases": [
+    {
+      "lots": 1,
+      "brokerage": "40.00",
+      "stt": "12.68",
+      "sebi": "0.02",
+      "stamp_duty": "0.23",
+      "gst": "8.24",
+      "spec": {"exchange_including_ipft": "5.77", "total": "66.94", "net_pnl": "583.06"},
+      "calculator": {"exchange_including_ipft": "5.77", "total": "66.94", "net_pnl": "583.06"}
+    },
+    {
+      "lots": 5,
+      "brokerage": "40.00",
+      "stt": "63.38",
+      "sebi": "0.08",
+      "stamp_duty": "1.17",
+      "gst": "12.41",
+      "spec": {"exchange_including_ipft": "28.87", "total": "145.91", "net_pnl": "3104.09"},
+      "calculator": {"exchange_including_ipft": "28.86", "total": "145.90", "net_pnl": "3104.10"}
+    },
+    {
+      "lots": 20,
+      "brokerage": "40.00",
+      "stt": "253.50",
+      "sebi": "0.33",
+      "stamp_duty": "4.68",
+      "gst": "28.04",
+      "spec": {"exchange_including_ipft": "115.47", "total": "442.02", "net_pnl": "12557.98"},
+      "calculator": {"exchange_including_ipft": "115.44", "total": "441.99", "net_pnl": "12558.01"}
+    }
+  ]
+}

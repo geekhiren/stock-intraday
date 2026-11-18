@@ -1,0 +1,32 @@
+{
+  "option_token": "42544",
+  "sizing": {
+    "entry_price": "120",
+    "stop_price": "99.20",
+    "risk_per_trade_pct": "0.5",
+    "risk_per_lot": "1352.00",
+    "cases": [
+      {"capital": "100000", "budget": "500", "lots": 0},
+      {"capital": "270399.99", "budget": "1351.99995", "lots": 0},
+      {"capital": "270400", "budget": "1352", "lots": 1},
+      {"capital": "800000", "budget": "4000", "lots": 2}
+    ]
+  },
+  "entry_plan": {
+    "entry_mid": "120",
+    "entry_ask": "120.60",
+    "premium_stop": "99.85",
+    "target_mid": "130",
+    "target_bid": "129.40"
+  },
+  "entry_risk": {
+    "capital": "300000",
+    "risk_per_trade_pct": "0.5",
+    "projected_buy": "120.65",
+    "projected_sell": "129.35",
+    "premium_deployed": "7842.25",
+    "all_in_friction": "151.38",
+    "net_at_target": "498.62",
+    "loss_cutoff": "-6000.00"
+  }
+}

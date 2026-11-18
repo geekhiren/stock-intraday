@@ -42,3 +42,11 @@ python run.py --compare-history YYYY-MM-DD
 - Run the history comparison after the session closes. It requires a continuous capture, a reference history with the same candle coverage, OHLC within one instrument tick, and exact volume. It reports each mismatched minute and exits with status 1 if the check fails.
 - Use the session hours applicable to the chosen contract and date in `config.yaml`. The default is 09:15–15:30 IST. NSE lists a 15:45 close for most index derivatives from 7 December 2026 and a 15:30 close for expiring index contracts on expiry day. [NSE session timing FAQ](https://nsearchives.nseindia.com/web/mediaattachment/2026-11/FAQs_for_CM_and_FO_FOR_CAS_2.0_20261109152618.pdf)
 - For a fixture-only run, use `python -m pytest tests/test_data_layer.py tests/test_history.py`. The synthetic session covers 375 one-minute candles and verifies the CLI replay output byte for byte.
+
+## Paper costs and risk
+
+`python -m pytest tests/test_cost_model.py tests/test_position_risk.py` runs the sizing, risk and fee fixtures. Sizing uses the selected contract's lot size and whole lots. If capital or per-trade risk is unset, the risk manager rejects entries. Reduce-only exits remain eligible against a verified held quantity.
+
+The paper charge model rounds each line item half-up to a paisa and adds those line items. It uses executed buy and sell prices for fees and net P&L. The entry gate uses projected fills to account for both spreads and the configured slippage without charging them again in net P&L.
+
+The default exchange rate including IPFT follows §15 of the spec. Angel One's public calculator displays totals reproduced with 0.03552% for the three committed cases. The fixtures record both sets of results. Account-specific estimates and contract-note rounding still need reconciliation. [Angel One brokerage calculator](https://www.angelone.in/calculators/brokerage-calculator)

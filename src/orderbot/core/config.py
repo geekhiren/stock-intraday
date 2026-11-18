@@ -95,9 +95,30 @@ class DataConfig(Section):
         return self
 
 
+PositivePercentage = Annotated[Decimal, Field(gt=0, le=100, allow_inf_nan=False)]
+TurnoverRate = Annotated[Decimal, Field(ge=0, le=1, allow_inf_nan=False)]
+
+
 class RiskConfig(Section):
     capital_inr: Annotated[Decimal, Field(gt=0, allow_inf_nan=False)] | None
-    risk_per_trade_pct: Annotated[Decimal, Field(gt=0, le=100, allow_inf_nan=False)] | None
+    risk_per_trade_pct: PositivePercentage | None
+    max_open_positions: Annotated[int, Field(strict=True, ge=1, le=1)]
+    max_premium_deployed_pct: PositivePercentage
+    max_entries_per_day: PositiveCount
+    daily_loss_limit_pct: PositivePercentage
+    max_consecutive_losses: PositiveCount
+    max_round_trip_friction_pct: PositivePercentage
+
+
+class CostConfig(Section):
+    brokerage_per_order_inr: Annotated[Decimal, Field(ge=0, allow_inf_nan=False)]
+    stt_sell_rate: TurnoverRate
+    stt_exercise_rate: TurnoverRate
+    exchange_including_ipft_rate: TurnoverRate
+    sebi_rate: TurnoverRate
+    stamp_buy_rate: TurnoverRate
+    gst_rate: TurnoverRate
+    slippage_ticks: Annotated[int, Field(strict=True, ge=0)]
 
 
 class StorageConfig(Section):
@@ -134,6 +155,7 @@ class Config(Section):
     market: MarketConfig
     data: DataConfig
     risk: RiskConfig
+    costs: CostConfig
     storage: StorageConfig
     logging: LoggingConfig
     broker: BrokerConfig
