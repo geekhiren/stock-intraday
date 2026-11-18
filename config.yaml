@@ -86,6 +86,25 @@ execution:
   reconcile_interval_seconds: 60
   paper_rejection_pct: "1"
   paper_rejection_seed: 0
+strategy_a:
+  consolidation_band: "0.005"
+  consolidation_lookback: 5
+  consolidation_max_near: 1
+  volume_lookback: 20
+  volume_multiple: "1.5"
+  rsi_long_band: ["40", "70"]
+  rsi_short_band: ["30", "60"]
+  require_pivot: false
+  pivot_tolerance: "0.0025"
+  entry_open: "09:30"
+  entry_close: "14:45"
+  expiry_entry_close: "12:00"
+  iv_lookback_sessions: 20
+  iv_percentile: "80"
+  cooldown_minutes: 15
+  k_sl: "2"
+  k_tgt: "4"
+  max_premium_loss_fraction: "0.35"
 storage:
   sqlite_path: var/orderbot.sqlite3
 logging:

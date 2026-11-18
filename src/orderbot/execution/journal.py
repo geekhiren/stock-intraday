@@ -149,14 +149,14 @@ class Journal:
             raise LifecycleError("Cannot reconstruct execution state from the SQLite journal.") from exc
         return Ledger(max((row["event_id"] for row in rows), default=0), tuple(orders), positions, trades, halts)
 
-    def record_skip(self, signal_id: str, strategy: str, at: datetime, reason: str) -> None:
+    def record_skip(self, signal_id: str, strategy: str, at: datetime, reason: str, detail: dict | None = None) -> None:
         with open_store(self.path) as connection:
             connection.execute(
-                "INSERT OR IGNORE INTO decisions(decision_id, at_utc, strategy, outcome, reason) VALUES (?, ?, ?, ?, ?)",
-                (signal_id, to_storage(at), strategy, "skipped", reason),
+                "INSERT OR IGNORE INTO decisions VALUES (?, ?, ?, ?, ?, ?)",
+                (signal_id, to_storage(at), strategy, "skipped", reason, json.dumps(detail or {})),
             )
 
-    def prepare(self, intents: tuple[OrderIntent, ...], revision: int) -> None:
+    def prepare(self, intents: tuple[OrderIntent, ...], revision: int, *, decision_detail: dict | None = None) -> None:
         if not intents:
             raise LifecycleError("No orders to journal.")
         first = intents[0]
@@ -173,8 +173,9 @@ class Journal:
                 if first.at.date() in ledger.halts:
                     raise JournalConflict("Current session has a durable execution halt.")
                 inserted = connection.execute(
-                    "INSERT OR IGNORE INTO decisions(decision_id, at_utc, strategy, outcome, reason) VALUES (?, ?, ?, ?, ?)",
-                    (first.decision_id, to_storage(first.at), first.strategy, "orders_prepared", first.reason),
+                    "INSERT OR IGNORE INTO decisions VALUES (?, ?, ?, ?, ?, ?)",
+                    (first.decision_id, to_storage(first.at), first.strategy, "orders_prepared", first.reason,
+                     json.dumps(decision_detail or {})),
                 ).rowcount
                 if not inserted:
                     raise JournalConflict("Decision ID has already been recorded.")

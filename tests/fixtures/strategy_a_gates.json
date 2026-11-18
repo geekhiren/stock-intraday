@@ -1,0 +1,27 @@
+{
+  "source": "Closed-candle gate references, prior VWAP differs on the last bar to check own-series comparisons",
+  "previous_count": 20,
+  "prior_volume": 100,
+  "vwap": "100",
+  "close_long": "100.25",
+  "close_short": "99.75",
+  "prior_long": "99",
+  "prior_short": "101",
+  "near_long": "99.60",
+  "near_short": "100.40",
+  "expected_volume_min": 150,
+  "atr": "20",
+  "reference_stop": {
+    "futures_entry": "22150",
+    "atr": "20",
+    "option_entry": "120",
+    "delta": "0.52",
+    "bull_stop": "22110",
+    "bull_target": "22230",
+    "bear_stop": "22190",
+    "bear_target": "22070",
+    "premium_stop": "99.20",
+    "premium_target": "161.60",
+    "premium_floor": "78.00"
+  }
+}

@@ -17,6 +17,7 @@ from orderbot.core.state_store import open_store
 from orderbot.data.capture import capture_session, compare_with_broker, load_replay
 from orderbot.execution.replay import replay_execution
 from orderbot.options.replay import replay_options
+from orderbot.strategy.replay import replay_strategy_a
 
 
 def main() -> int:
@@ -32,6 +33,7 @@ def main() -> int:
     action.add_argument("--replay", type=date.fromisoformat, metavar="YYYY-MM-DD", help="Replay a dated tick archive")
     action.add_argument("--replay-options", type=Path, metavar="FIXTURE", help="Replay paper option selection decisions")
     action.add_argument("--replay-execution", type=Path, metavar="FIXTURE", help="Replay paper execution and restart")
+    action.add_argument("--replay-strategy-a", type=Path, metavar="FIXTURE", help="Replay Strategy A against fixtures")
     action.add_argument("--compare-history", type=date.fromisoformat, metavar="YYYY-MM-DD",
                         help="Compare a capture with SmartAPI historical candles")
     parser.add_argument("--option-token", action="append", default=[], help="Include a dated NIFTY option in capture")
@@ -61,6 +63,9 @@ def main() -> int:
             return 0
         if args.replay_execution:
             print(json.dumps(replay_execution(args.replay_execution, config), sort_keys=True, indent=2))
+            return 0
+        if args.replay_strategy_a:
+            print(json.dumps(replay_strategy_a(args.replay_strategy_a, config), sort_keys=True, indent=2))
             return 0
         if args.compare_history:
             report, passed = compare_with_broker(config, directory, args.compare_history)

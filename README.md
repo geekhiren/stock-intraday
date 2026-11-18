@@ -77,3 +77,14 @@ The replay uses fixture funding in isolated temporary databases. The checked-in 
 The journal commits the intent and tag before submitting to the simulated venue. After a timeout it waits and looks up the tag once. An unresolved send retains its pending state and latches a session halt. On startup and at the configured interval when polled, reconciliation compares the independent paper books with the journal, recovers corroborated fills, and alerts on mismatches. The fixture tests also reopen those SQLite files in a new Python process.
 
 Angel One's authenticated order-book behavior, tag visibility after a timeout, partial-fill and cancellation timing, and position-book lag are pending verification. [SmartAPI order documentation](https://smartapi.angelone.in/docs/ResponseStructure)
+
+## Strategy A fixture replay
+
+```powershell
+python run.py --replay-strategy-a tests/fixtures/phase5_session.json
+python -m pytest tests/test_strategy_a.py
+```
+
+The replay calculates VWAP, Wilder RSI and ATR from 375 synthetic near-month futures candles, evaluates all nine entry gates, and routes CE and PE signals through the paper executor. The audit records a result for each gate and the projected and fill-anchored stop plans for completed trades. Fixture events request the exits. The Phase 6 exit engine supplies automated exits.
+
+The entry window applies to the actual decision and submission clocks, with the end instant excluded. The noon cutoff uses the listed market expiry even when the selected option has rolled to a later date. The optional pivot rule uses the directional band in §19. The IV gate uses the last 20 completed session observations for the same option right, the nearest-rank 80th percentile, and a strict below-threshold comparison on the current ATM contract. Collection of authenticated ATM IV samples and execution against recorded Angel One market data still need verification.

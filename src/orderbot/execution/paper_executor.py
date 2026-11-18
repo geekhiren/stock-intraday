@@ -96,10 +96,11 @@ class PaperExecutor:
     def enter(
         self, signal_id: str, strategy: str, selection: StrikeDecision, quote: OptionQuote, *,
         spot: Decimal, premium_stop: Decimal, target_mid: Decimal, target_bid: Decimal,
+        decision_detail: dict | None = None,
     ) -> ExecutionResult:
         with self._lock:
             def skip(reason: str):
-                self.journal.record_skip(signal_id, strategy, self._now(), reason)
+                self.journal.record_skip(signal_id, strategy, self._now(), reason, decision_detail)
                 return ExecutionResult("skipped", reason)
 
             at = self._now()
@@ -139,7 +140,7 @@ class PaperExecutor:
             intents = self._intents(
                 signal_id, strategy, plan.instrument, "BUY", children, limit, at, premium_stop, "entry",
             )
-            return self._prepare_and_send(intents, ledger.revision, quote)
+            return self._prepare_and_send(intents, ledger.revision, quote, decision_detail=decision_detail)
 
     def exit_position(
         self, decision_id: str, contract: Instrument, quote: OptionQuote, *,
@@ -219,9 +220,9 @@ class PaperExecutor:
             for quantity in children
         )
 
-    def _prepare_and_send(self, intents, revision, quote) -> ExecutionResult:
+    def _prepare_and_send(self, intents, revision, quote, *, decision_detail=None) -> ExecutionResult:
         try:
-            self.journal.prepare(intents, revision)
+            self.journal.prepare(intents, revision, decision_detail=decision_detail)
         except JournalConflict:
             return ExecutionResult("skipped", "journal_conflict")
         tags = tuple(order.tag for order in intents)

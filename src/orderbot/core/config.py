@@ -174,6 +174,43 @@ class ExecutionConfig(Section):
     paper_rejection_seed: NonnegativeCount
 
 
+RSIPoint = Annotated[Decimal, Field(ge=0, le=100, allow_inf_nan=False)]
+
+
+class StrategyAConfig(Section):
+    consolidation_band: TurnoverRate
+    consolidation_lookback: PositiveCount
+    consolidation_max_near: NonnegativeCount
+    volume_lookback: PositiveCount
+    volume_multiple: PositiveDecimal
+    rsi_long_band: tuple[RSIPoint, RSIPoint]
+    rsi_short_band: tuple[RSIPoint, RSIPoint]
+    require_pivot: Annotated[bool, Field(strict=True)]
+    pivot_tolerance: TurnoverRate
+    entry_open: time
+    entry_close: time
+    expiry_entry_close: time
+    iv_lookback_sessions: PositiveCount
+    iv_percentile: PositivePercentage
+    cooldown_minutes: NonnegativeCount
+    k_sl: PositiveDecimal
+    k_tgt: PositiveDecimal
+    max_premium_loss_fraction: Annotated[Decimal, Field(gt=0, lt=1, allow_inf_nan=False)]
+
+    @model_validator(mode="after")
+    def check_strategy_ranges(self):
+        if self.consolidation_max_near >= self.consolidation_lookback:
+            raise ValueError("Consolidation maximum must be below its lookback.")
+        if any(low > high for low, high in (self.rsi_long_band, self.rsi_short_band)):
+            raise ValueError("RSI bands must be ascending.")
+        times = self.entry_open, self.expiry_entry_close, self.entry_close
+        if any(value.tzinfo or value.second or value.microsecond for value in times):
+            raise ValueError("Entry times must be IST minute boundaries.")
+        if not self.entry_open < self.expiry_entry_close <= self.entry_close:
+            raise ValueError("Strategy A entry windows must be ordered.")
+        return self
+
+
 class StorageConfig(Section):
     sqlite_path: Path
 
@@ -211,6 +248,7 @@ class Config(Section):
     risk: RiskConfig
     costs: CostConfig
     execution: ExecutionConfig
+    strategy_a: StrategyAConfig
     storage: StorageConfig
     logging: LoggingConfig
     broker: BrokerConfig
