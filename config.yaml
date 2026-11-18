@@ -6,6 +6,33 @@ runtime:
 market:
   underlying: NIFTY
   signal_series: near_month_futures
+  session_open: "09:15"
+  session_close: "15:30"
+data:
+  instrument_master_url: https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json
+  instrument_cache_dir: var/instruments
+  instrument_download_timeout_seconds: 30
+  history_cache_dir: var/history
+  tick_archive_dir: var/ticks
+  archive_batch_rows: 256
+  archive_flush_seconds: 5
+  close_grace_seconds: 2
+  rsi_period: 14
+  atr_period: 14
+  history_attempts: 3
+  history_backoff_seconds: 1
+  history_backoff_max_seconds: 8
+  previous_session_lookback_days: 14
+  capture_lead_minutes: 5
+  websocket_url: wss://smartapisocket.angelone.in/smart-stream
+  websocket_subscription_limit: 1000
+  websocket_connect_timeout_seconds: 5
+  websocket_poll_seconds: 0.5
+  websocket_heartbeat_seconds: 10
+  websocket_stale_seconds: 5
+  websocket_reconnect_seconds: 30
+  websocket_backoff_seconds: 1
+  websocket_backoff_max_seconds: 8
 risk:
   capital_inr: null
   risk_per_trade_pct: null

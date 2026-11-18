@@ -14,14 +14,21 @@ import pyotp
 import requests
 
 from orderbot.core.config import BrokerConfig
-from orderbot.core.ist_time import now_ist, require_aware
+from orderbot.core.ist_time import as_ist, now_ist, require_aware
 
 
 LOGIN_ROUTE = "/rest/auth/angelbroking/user/v1/loginByPassword"
+HISTORY_ROUTE = "/rest/secure/angelbroking/historical/v1/getCandleData"
 
 
 class LoginError(RuntimeError):
     """SmartAPI authentication failed. Messages omit sensitive request and response data."""
+
+
+class RequestError(RuntimeError):
+    def __init__(self, message: str, *, retryable: bool = False):
+        super().__init__(message)
+        self.retryable = retryable
 
 
 @dataclass(frozen=True)
@@ -82,8 +89,9 @@ class AngelClient:
         self._rest_lock = Lock()
         self._next_request_at = 0.0
 
-    def login(self, credentials: Credentials) -> Session:
-        headers = {
+    @staticmethod
+    def _headers(credentials: Credentials) -> dict[str, str]:
+        return {
             "Accept": "application/json",
             "X-PrivateKey": credentials.api_key,
             "X-UserType": "USER",
@@ -92,44 +100,78 @@ class AngelClient:
             "X-ClientPublicIP": credentials.public_ip,
             "X-MACAddress": credentials.mac_address,
         }
-        with self._rest_lock:
-            delay = self._next_request_at - monotonic()
-            if delay > 0:
-                sleep(delay)
+    def login(self, credentials: Credentials) -> Session:
+        def payload():
             try:
                 now = require_aware(self._clock())
                 code = pyotp.TOTP(credentials.totp_secret).at(now)
             except (ValueError, binascii.Error):
                 raise LoginError("Could not generate TOTP from the configured secret and clock.") from None
-            self._next_request_at = monotonic() + 1 / self.config.rest_max_requests_per_second
-            try:
-                response = self._transport.post(
-                    self.config.base_url + LOGIN_ROUTE,
-                    headers=headers,
-                    json={"clientcode": credentials.client_code, "password": credentials.mpin, "totp": code},
-                    timeout=self.config.timeout_seconds,
-                    allow_redirects=False,
-                )
-            except requests.RequestException:
-                raise LoginError("SmartAPI login transport failed.") from None
+            return {"clientcode": credentials.client_code, "password": credentials.mpin, "totp": code}
 
-        if not 200 <= response.status_code < 300:
-            raise LoginError(f"SmartAPI login returned HTTP {response.status_code}.")
         try:
-            envelope = response.json()
-        except ValueError:
-            raise LoginError("SmartAPI returned an invalid login response.") from None
-        if not isinstance(envelope, dict):
-            raise LoginError("SmartAPI returned an invalid login response.")
-        if envelope.get("status") is not True:
-            error_code = envelope.get("errorcode")
-            if isinstance(error_code, str) and re.fullmatch(r"AB\d{4}", error_code):
-                raise LoginError(f"SmartAPI rejected login ({error_code}).")
-            raise LoginError("SmartAPI rejected login.")
-        data = envelope.get("data")
+            data = self._post("login", LOGIN_ROUTE, self._headers(credentials), payload)
+        except RequestError as exc:
+            raise LoginError(str(exc)) from None
         if not isinstance(data, dict):
             raise LoginError("SmartAPI login response is missing session tokens.")
         tokens = (data.get("jwtToken"), data.get("refreshToken"), data.get("feedToken"))
         if not all(isinstance(token, str) and token.strip() for token in tokens):
             raise LoginError("SmartAPI login response is missing session tokens.")
         return Session(*tokens)
+
+    def historical_minutes(
+        self, credentials: Credentials, session: Session, exchange: str, token: str,
+        start: datetime, end: datetime,
+    ) -> list:
+        headers = self._headers(credentials) | {"Authorization": "Bearer " + session.jwt_token}
+        data = self._post("history", HISTORY_ROUTE, headers, lambda: {
+            "exchange": exchange,
+            "symboltoken": token,
+            "interval": "ONE_MINUTE",
+            "fromdate": as_ist(start).strftime("%Y-%m-%d %H:%M"),
+            "todate": as_ist(end).strftime("%Y-%m-%d %H:%M"),
+        })
+        if not isinstance(data, list):
+            raise RequestError("SmartAPI history response did not contain a candle array.")
+        return data
+
+    def _post(self, action: str, route: str, headers: dict, payload: Callable[[], dict]):
+        if (action, route) not in {("login", LOGIN_ROUTE), ("history", HISTORY_ROUTE)}:
+            raise RequestError("This paper-mode client only supports login and candle history.")
+        with self._rest_lock:
+            delay = self._next_request_at - monotonic()
+            if delay > 0:
+                sleep(delay)
+            parameters = payload()
+            self._next_request_at = monotonic() + 1 / self.config.rest_max_requests_per_second
+            try:
+                response = self._transport.post(
+                    self.config.base_url + route,
+                    headers=headers,
+                    json=parameters,
+                    timeout=self.config.timeout_seconds,
+                    allow_redirects=False,
+                )
+            except requests.RequestException:
+                raise RequestError(f"SmartAPI {action} transport failed.", retryable=True) from None
+
+        if not 200 <= response.status_code < 300:
+            raise RequestError(
+                f"SmartAPI {action} returned HTTP {response.status_code}.",
+                retryable=response.status_code in {403, 429} or response.status_code >= 500,
+            )
+        try:
+            envelope = response.json()
+        except ValueError:
+            raise RequestError(f"SmartAPI returned an invalid {action} response.") from None
+        if not isinstance(envelope, dict):
+            raise RequestError(f"SmartAPI returned an invalid {action} response.")
+        if envelope.get("status") is not True:
+            error_code = envelope.get("errorcode")
+            if isinstance(error_code, str) and re.fullmatch(r"AB\d{4}", error_code):
+                raise RequestError(
+                    f"SmartAPI rejected {action} ({error_code}).", retryable=error_code == "AB1021"
+                )
+            raise RequestError(f"SmartAPI rejected {action}.")
+        return envelope.get("data")

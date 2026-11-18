@@ -52,6 +52,10 @@ def test_production_datetime_constructors_specify_timezone():
                     assert len(call.args) >= minimum_args or _timezone_keyword(call, "tz"), (
                         path, call.lineno, method
                     )
+                if method == "combine":
+                    assert len(call.args) >= 3 or _timezone_keyword(call, "tzinfo"), (
+                        path, call.lineno, method
+                    )
             if function in aliases or function.endswith(".datetime"):
                 assert len(call.args) >= 8 or _timezone_keyword(call, "tzinfo"), (
                     path, call.lineno, function

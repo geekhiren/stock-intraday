@@ -1,6 +1,6 @@
 # OrderBOT
 
-Phase 0 provides the Python 3.11+ paper-mode foundation for a NIFTY futures signal series and NIFTY weekly options. The command-line entry point initializes storage and can check SmartAPI authentication.
+OrderBOT uses Python 3.11+ and runs in paper mode. The command-line entry point initializes storage, checks SmartAPI authentication, and captures or replays market data for the NIFTY near-month futures signal series.
 
 ```powershell
 python -m pip install -e ".[test]"
@@ -26,3 +26,19 @@ Set the following variables in the environment from which you run OrderBOT.
 | `ANGEL_ONE_MAC_ADDRESS` | Colon-delimited MAC of the client machine |
 
 Run `python run.py --broker-login` to authenticate. The command reports success or a sanitized error and exits. The [SmartAPI documentation](https://smartapi.angelone.in/docs) describes the request headers and authentication flow.
+
+## Market data and replay
+
+```powershell
+python run.py --fetch-instruments
+python run.py --capture-data
+python run.py --replay YYYY-MM-DD
+python run.py --compare-history YYYY-MM-DD
+```
+
+- Fetch the public instrument master before the session. The cache uses the IST session date. Capture connects to SmartAPI for data only and requires the environment variables above.
+- Start capture during the configured lead-in before the continuous session opens to record the pre-open traded-volume baseline. The futures and spot tokens come from that day's master. Repeat `--option-token TOKEN` to include unexpired NIFTY options.
+- The capture writes raw Snap Quote frames into dated Parquet partitions. It stores any historical seed used for indicators alongside them. Replay uses the dated cache and recorded timestamps and works without SmartAPI credentials.
+- Run the history comparison after the session closes. It requires a continuous capture, a reference history with the same candle coverage, OHLC within one instrument tick, and exact volume. It reports each mismatched minute and exits with status 1 if the check fails.
+- Use the session hours applicable to the chosen contract and date in `config.yaml`. The default is 09:15–15:30 IST. NSE lists a 15:45 close for most index derivatives from 7 December 2026 and a 15:30 close for expiring index contracts on expiry day. [NSE session timing FAQ](https://nsearchives.nseindia.com/web/mediaattachment/2026-11/FAQs_for_CM_and_FO_FOR_CAS_2.0_20261109152618.pdf)
+- For a fixture-only run, use `python -m pytest tests/test_data_layer.py tests/test_history.py`. The synthetic session covers 375 one-minute candles and verifies the CLI replay output byte for byte.

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from datetime import time
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, StringConstraints, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, StringConstraints, ValidationError, model_validator
 from yaml.constructor import ConstructorError
 
 
@@ -39,6 +40,59 @@ class RuntimeConfig(Section):
 class MarketConfig(Section):
     underlying: Literal["NIFTY"]
     signal_series: Literal["near_month_futures"]
+    session_open: time
+    session_close: time
+
+    @model_validator(mode="after")
+    def check_session(self):
+        if any(value.tzinfo or value.second or value.microsecond for value in (self.session_open, self.session_close)):
+            raise ValueError("Session times must be IST minute boundaries.")
+        if self.session_open >= self.session_close:
+            raise ValueError("Session open must precede session close.")
+        return self
+
+
+PositiveSeconds = Annotated[FiniteFloat, Field(strict=True, gt=0)]
+PositiveCount = Annotated[int, Field(strict=True, gt=0)]
+
+
+class DataConfig(Section):
+    instrument_master_url: Literal[
+        "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
+    ]
+    instrument_cache_dir: Path
+    instrument_download_timeout_seconds: PositiveSeconds
+    history_cache_dir: Path
+    tick_archive_dir: Path
+    archive_batch_rows: PositiveCount
+    archive_flush_seconds: PositiveSeconds
+    close_grace_seconds: Annotated[FiniteFloat, Field(strict=True, ge=0, lt=60)]
+    rsi_period: PositiveCount
+    atr_period: PositiveCount
+    history_attempts: PositiveCount
+    history_backoff_seconds: PositiveSeconds
+    history_backoff_max_seconds: PositiveSeconds
+    previous_session_lookback_days: Annotated[int, Field(strict=True, gt=0, le=30)]
+    capture_lead_minutes: PositiveCount
+    websocket_url: Literal["wss://smartapisocket.angelone.in/smart-stream"]
+    websocket_subscription_limit: Annotated[int, Field(strict=True, gt=0, le=1000)]
+    websocket_connect_timeout_seconds: PositiveSeconds
+    websocket_poll_seconds: PositiveSeconds
+    websocket_heartbeat_seconds: Annotated[FiniteFloat, Field(strict=True, gt=0, le=30)]
+    websocket_stale_seconds: PositiveSeconds
+    websocket_reconnect_seconds: PositiveSeconds
+    websocket_backoff_seconds: PositiveSeconds
+    websocket_backoff_max_seconds: PositiveSeconds
+
+    @model_validator(mode="after")
+    def check_timing(self):
+        if not self.websocket_poll_seconds < self.websocket_stale_seconds < self.websocket_reconnect_seconds:
+            raise ValueError("WebSocket poll, staleness and reconnect intervals must increase.")
+        if self.websocket_backoff_seconds > self.websocket_backoff_max_seconds:
+            raise ValueError("WebSocket initial backoff must fit within its cap.")
+        if self.history_backoff_seconds > self.history_backoff_max_seconds:
+            raise ValueError("History initial backoff must fit within its cap.")
+        return self
 
 
 class RiskConfig(Section):
@@ -78,6 +132,7 @@ class BrokerConfig(Section):
 class Config(Section):
     runtime: RuntimeConfig
     market: MarketConfig
+    data: DataConfig
     risk: RiskConfig
     storage: StorageConfig
     logging: LoggingConfig

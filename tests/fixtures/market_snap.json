@@ -1,0 +1,34 @@
+{
+  "token": "61471",
+  "exchange_type": 2,
+  "exchange_epoch_ms": 1794973500300,
+  "trade_epoch_ms": 1794973500100,
+  "sequence": 42,
+  "price_paise": 2215000,
+  "cumulative_volume": 120,
+  "open_interest": 8700,
+  "bids": [
+    [
+      2214990,
+      65,
+      2
+    ],
+    [
+      2214985,
+      130,
+      3
+    ]
+  ],
+  "asks": [
+    [
+      2215010,
+      195,
+      3
+    ],
+    [
+      2215015,
+      65,
+      1
+    ]
+  ]
+}

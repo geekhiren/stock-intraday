@@ -1,0 +1,50 @@
+[
+  {
+    "token": "61471",
+    "symbol": "NIFTY23NOV26FUT",
+    "name": "NIFTY",
+    "expiry": "23NOV2026",
+    "strike": "-1.000000",
+    "lotsize": "65",
+    "instrumenttype": "FUTIDX",
+    "exch_seg": "NFO",
+    "tick_size": "10.000000",
+    "freeze_qty": "1801"
+  },
+  {
+    "token": "58875",
+    "symbol": "NIFTY29DEC26FUT",
+    "name": "NIFTY",
+    "expiry": "29DEC2026",
+    "strike": "-1.000000",
+    "lotsize": "65",
+    "instrumenttype": "FUTIDX",
+    "exch_seg": "NFO",
+    "tick_size": "10.000000",
+    "freeze_qty": "1801"
+  },
+  {
+    "token": "42544",
+    "symbol": "NIFTY08DEC2622150CE",
+    "name": "NIFTY",
+    "expiry": "08DEC2026",
+    "strike": "2215000.000000",
+    "lotsize": "65",
+    "instrumenttype": "OPTIDX",
+    "exch_seg": "NFO",
+    "tick_size": "5.000000",
+    "freeze_qty": "1801"
+  },
+  {
+    "token": "99926000",
+    "symbol": "Nifty 50",
+    "name": "NIFTY",
+    "expiry": "",
+    "strike": "0.000000",
+    "lotsize": "1",
+    "instrumenttype": "AMXIDX",
+    "exch_seg": "NSE",
+    "tick_size": "0.000000",
+    "freeze_qty": "0"
+  }
+]

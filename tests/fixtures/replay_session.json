@@ -1,0 +1,22 @@
+{
+  "session": "2026-11-18",
+  "signal_token": "61471",
+  "first_open": "22150.00",
+  "opening_volume_baseline": 40,
+  "offsets_paise": [
+    0,
+    30,
+    -20,
+    10
+  ],
+  "trade_quantities": [
+    4,
+    7,
+    3,
+    6
+  ],
+  "minute_step_paise": 10,
+  "expected_minutes": 375,
+  "expected_volume": 7500,
+  "expected_last_close": "22187.50"
+}
