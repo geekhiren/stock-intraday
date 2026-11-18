@@ -1,0 +1,31 @@
+runtime:
+  mode: paper
+  live_enabled: false
+  strategy: vwap
+  timezone: Asia/Kolkata
+market:
+  underlying: NIFTY
+  signal_series: near_month_futures
+risk:
+  capital_inr: null
+  risk_per_trade_pct: null
+storage:
+  sqlite_path: var/orderbot.sqlite3
+logging:
+  level: INFO
+  application_path: var/log/application.jsonl
+  order_audit_path: var/log/order-audit.jsonl
+  rotate_bytes: 10485760
+  backup_count: 5
+broker:
+  provider: angel_one
+  base_url: https://apiconnect.angelone.in
+  timeout_seconds: 10
+  rest_max_requests_per_second: 1
+  api_key_env: ANGEL_ONE_API_KEY
+  client_code_env: ANGEL_ONE_CLIENT_CODE
+  mpin_env: ANGEL_ONE_MPIN
+  totp_secret_env: ANGEL_ONE_TOTP_SECRET
+  local_ip_env: ANGEL_ONE_LOCAL_IP
+  public_ip_env: ANGEL_ONE_PUBLIC_IP
+  mac_address_env: ANGEL_ONE_MAC_ADDRESS
