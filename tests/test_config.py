@@ -38,6 +38,8 @@ def test_checked_in_config_round_trips(tmp_path):
         ("options", "max_otm_steps", 2),
         ("options", "target_abs_delta", "0.95"),
         ("options", "depth_levels", 6),
+        ("execution", "paper_rejection_pct", 101),
+        ("execution", "partial_timeout_seconds", 0),
         ("broker", "base_url", "https://other.example"),
         ("broker", "timeout_seconds", 0),
         ("broker", "unused_setting", "secret-value"),

@@ -165,6 +165,15 @@ class CostConfig(Section):
     slippage_ticks: Annotated[int, Field(strict=True, ge=0)]
 
 
+class ExecutionConfig(Section):
+    max_entry_premium: PositiveDecimal
+    partial_timeout_seconds: PositiveSeconds
+    timeout_lookup_delay_seconds: PositiveSeconds
+    reconcile_interval_seconds: PositiveSeconds
+    paper_rejection_pct: Annotated[Decimal, Field(ge=0, le=100, allow_inf_nan=False)]
+    paper_rejection_seed: NonnegativeCount
+
+
 class StorageConfig(Section):
     sqlite_path: Path
 
@@ -201,6 +210,7 @@ class Config(Section):
     options: OptionsConfig
     risk: RiskConfig
     costs: CostConfig
+    execution: ExecutionConfig
     storage: StorageConfig
     logging: LoggingConfig
     broker: BrokerConfig

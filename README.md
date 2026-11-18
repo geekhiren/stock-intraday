@@ -64,3 +64,16 @@ The fixture replay produces a JSON audit of every candidate and requote, with fu
 - The default moneyness policy admits ATM and one ITM strike. Revalidation aborts on any wider spread or a mid move beyond the configured tolerance. It keeps the original contract identity throughout the check.
 - Black-76 estimates forward delta from an expiry-matched forward derived from spot and the configured rate and dividend yield. The paper rate, dividend yield, liquidity floors and requote tolerance are assumptions in `config.yaml`. A broker delta, when supplied, serves as a comparison.
 - The split plan applies the configured NSE inclusive cap, the broker's raw field as an exclusive ceiling, and whole contract lots. The broker's interpretation of its raw field and actual acceptance of child quantities still need verification. [NSE quantity-freeze report](https://nsearchives.nseindia.com/content/fo/qtyfreeze.csv)
+
+## Paper execution and restart
+
+```powershell
+python run.py --replay-execution tests/fixtures/phase4_execution.json
+python -m pytest tests/test_execution.py
+```
+
+The replay uses fixture funding in isolated temporary databases. The checked-in account settings remain unset. The paper venue fills at the displayed ask for buys and bid for sells, adjusted by configured slippage and bounded by the order limit. It consumes only the displayed quantity at that price and shares that quantity across children. The executor cancels outstanding quantities at the partial-order deadline. Closed paper trades include the full charge stack and net P&L from completed fills.
+
+The journal commits the intent and tag before submitting to the simulated venue. After a timeout it waits and looks up the tag once. An unresolved send retains its pending state and latches a session halt. On startup and at the configured interval when polled, reconciliation compares the independent paper books with the journal, recovers corroborated fills, and alerts on mismatches. The fixture tests also reopen those SQLite files in a new Python process.
+
+Angel One's authenticated order-book behavior, tag visibility after a timeout, partial-fill and cancellation timing, and position-book lag are pending verification. [SmartAPI order documentation](https://smartapi.angelone.in/docs/ResponseStructure)

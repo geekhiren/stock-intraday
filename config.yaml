@@ -79,6 +79,13 @@ costs:
   stamp_buy_rate: "0.00003"
   gst_rate: "0.18"
   slippage_ticks: 1
+execution:
+  max_entry_premium: "400"
+  partial_timeout_seconds: 10
+  timeout_lookup_delay_seconds: 1
+  reconcile_interval_seconds: 60
+  paper_rejection_pct: "1"
+  paper_rejection_seed: 0
 storage:
   sqlite_path: var/orderbot.sqlite3
 logging:
