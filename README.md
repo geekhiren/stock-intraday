@@ -50,3 +50,17 @@ python run.py --compare-history YYYY-MM-DD
 The paper charge model rounds each line item half-up to a paisa and adds those line items. It uses executed buy and sell prices for fees and net P&L. The entry gate uses projected fills to account for both spreads and the configured slippage without charging them again in net P&L.
 
 The default exchange rate including IPFT follows §15 of the spec. Angel One's public calculator displays totals reproduced with 0.03552% for the three committed cases. The fixtures record both sets of results. Account-specific estimates and contract-note rounding still need reconciliation. [Angel One brokerage calculator](https://www.angelone.in/calculators/brokerage-calculator)
+
+## Paper option selection
+
+```powershell
+python run.py --replay-options tests/fixtures/phase3_session.json
+python -m pytest tests/test_options.py
+```
+
+The fixture replay produces a JSON audit of every candidate and requote, with full bid/ask depth, local IV and delta where available, rejection reasons, and proposed child quantities. Its lot counts are fixture inputs. Capital and per-trade risk remain unset.
+
+- Expiries come from the instrument master. The resolver excludes monthly dates identified from the three consecutive listed NIFTY futures and requires two trading sessions after today before it will select a weekly. Supply exchange trading-session dates, including holidays and special sessions, as an input. Incomplete calendar or series data blocks selection. [NSE contract specifications](https://betanseapi.nseindia.com/static/products-services/equity-derivatives-contract-specifications)
+- The default moneyness policy admits ATM and one ITM strike. Revalidation aborts on any wider spread or a mid move beyond the configured tolerance. It keeps the original contract identity throughout the check.
+- Black-76 estimates forward delta from an expiry-matched forward derived from spot and the configured rate and dividend yield. The paper rate, dividend yield, liquidity floors and requote tolerance are assumptions in `config.yaml`. A broker delta, when supplied, serves as a comparison.
+- The split plan applies the configured NSE inclusive cap, the broker's raw field as an exclusive ceiling, and whole contract lots. The broker's interpretation of its raw field and actual acceptance of child quantities still need verification. [NSE quantity-freeze report](https://nsearchives.nseindia.com/content/fo/qtyfreeze.csv)

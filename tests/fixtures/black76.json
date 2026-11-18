@@ -1,0 +1,24 @@
+{
+  "source": "SciPy ndtr + independent Brent root reference, ACT/365F, continuous carry, delta with respect to forward",
+  "at": "2026-11-30T09:45:00+05:30",
+  "expiry_at": "2026-12-08T15:30:00+05:30",
+  "spot": "22150",
+  "annual_rate": "0.06",
+  "dividend_yield": "0.01",
+  "cases": [
+    {
+      "right": "CE",
+      "strike": "22150",
+      "mid": "120",
+      "iv": 0.08069107350863323,
+      "delta": 0.5387649595684452
+    },
+    {
+      "right": "PE",
+      "strike": "22200",
+      "mid": "202",
+      "iv": 0.14250722852050313,
+      "delta": -0.5160063271137858
+    }
+  ]
+}

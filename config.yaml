@@ -33,6 +33,34 @@ data:
   websocket_reconnect_seconds: 30
   websocket_backoff_seconds: 1
   websocket_backoff_max_seconds: 8
+options:
+  monthly_futures_count: 3
+  min_later_trading_sessions: 2
+  strike_interval: "50"
+  candidate_wings: 2
+  max_itm_steps: 1
+  max_otm_steps: 0
+  min_abs_delta: "0.45"
+  target_abs_delta: "0.52"
+  max_abs_delta: "0.60"
+  min_premium: "50"
+  max_premium: "400"
+  max_spread_fraction: "0.01"
+  max_spread_ticks: 4
+  depth_levels: 5
+  depth_multiple: 3
+  min_open_interest: 1000
+  min_day_volume: 500
+  quote_max_age_seconds: 5
+  max_requote_mid_fraction: "0.003"
+  quantity_freeze_units: 1800
+  expiry_close: "15:30"
+  annual_rate: "0.06"
+  dividend_yield: "0.01"
+  maximum_iv: "5"
+  iv_price_tolerance: "0.000001"
+  iv_max_iterations: 80
+  broker_delta_tolerance: "0.05"
 risk:
   capital_inr: null
   risk_per_trade_pct: null

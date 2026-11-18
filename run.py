@@ -15,6 +15,7 @@ from orderbot.core.event_log import open_logs
 from orderbot.core.ist_time import now_ist
 from orderbot.core.state_store import open_store
 from orderbot.data.capture import capture_session, compare_with_broker, load_replay
+from orderbot.options.replay import replay_options
 
 
 def main() -> int:
@@ -28,6 +29,7 @@ def main() -> int:
     action.add_argument("--fetch-instruments", action="store_true", help="Validate and cache today's instruments")
     action.add_argument("--capture-data", action="store_true", help="Capture SmartAPI market data for research")
     action.add_argument("--replay", type=date.fromisoformat, metavar="YYYY-MM-DD", help="Replay a dated tick archive")
+    action.add_argument("--replay-options", type=Path, metavar="FIXTURE", help="Replay paper option selection decisions")
     action.add_argument("--compare-history", type=date.fromisoformat, metavar="YYYY-MM-DD",
                         help="Compare a capture with SmartAPI historical candles")
     parser.add_argument("--option-token", action="append", default=[], help="Include a dated NIFTY option in capture")
@@ -51,6 +53,9 @@ def main() -> int:
             return 0
         if args.replay:
             print(load_replay(config, directory, args.replay).to_json())
+            return 0
+        if args.replay_options:
+            print(json.dumps(replay_options(args.replay_options, config), sort_keys=True, indent=2))
             return 0
         if args.compare_history:
             report, passed = compare_with_broker(config, directory, args.compare_history)

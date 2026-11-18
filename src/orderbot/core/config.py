@@ -97,6 +97,50 @@ class DataConfig(Section):
 
 PositivePercentage = Annotated[Decimal, Field(gt=0, le=100, allow_inf_nan=False)]
 TurnoverRate = Annotated[Decimal, Field(ge=0, le=1, allow_inf_nan=False)]
+PositiveDecimal = Annotated[Decimal, Field(gt=0, allow_inf_nan=False)]
+NonnegativeCount = Annotated[int, Field(strict=True, ge=0)]
+
+
+class OptionsConfig(Section):
+    monthly_futures_count: PositiveCount
+    min_later_trading_sessions: PositiveCount
+    strike_interval: PositiveDecimal
+    candidate_wings: PositiveCount
+    max_itm_steps: NonnegativeCount
+    max_otm_steps: Annotated[int, Field(strict=True, ge=0, le=1)]
+    min_abs_delta: TurnoverRate
+    target_abs_delta: TurnoverRate
+    max_abs_delta: TurnoverRate
+    min_premium: PositiveDecimal
+    max_premium: PositiveDecimal
+    max_spread_fraction: TurnoverRate
+    max_spread_ticks: PositiveCount
+    depth_levels: Annotated[int, Field(strict=True, ge=1, le=5)]
+    depth_multiple: PositiveCount
+    min_open_interest: NonnegativeCount
+    min_day_volume: NonnegativeCount
+    quote_max_age_seconds: PositiveSeconds
+    max_requote_mid_fraction: TurnoverRate
+    quantity_freeze_units: PositiveCount
+    expiry_close: time
+    annual_rate: TurnoverRate
+    dividend_yield: TurnoverRate
+    maximum_iv: PositiveDecimal
+    iv_price_tolerance: PositiveDecimal
+    iv_max_iterations: PositiveCount
+    broker_delta_tolerance: TurnoverRate
+
+    @model_validator(mode="after")
+    def check_option_ranges(self):
+        if not self.min_abs_delta <= self.target_abs_delta <= self.max_abs_delta:
+            raise ValueError("Target absolute delta must be inside the allowed band.")
+        if self.min_premium > self.max_premium:
+            raise ValueError("Minimum option premium must be at most the maximum.")
+        if max(self.max_itm_steps, self.max_otm_steps) > self.candidate_wings:
+            raise ValueError("Moneyness limits must fit within the candidate window.")
+        if self.expiry_close.tzinfo or self.expiry_close.second or self.expiry_close.microsecond:
+            raise ValueError("Option expiry close must be an IST minute boundary.")
+        return self
 
 
 class RiskConfig(Section):
@@ -154,6 +198,7 @@ class Config(Section):
     runtime: RuntimeConfig
     market: MarketConfig
     data: DataConfig
+    options: OptionsConfig
     risk: RiskConfig
     costs: CostConfig
     storage: StorageConfig
