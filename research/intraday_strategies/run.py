@@ -1,7 +1,7 @@
 """Test the published intraday strategies one by one on one stock.
 
     python -m research.intraday_strategies.run --symbol RELIANCE
-    python -m research.intraday_strategies.run --symbol HDFCBANK --only s7_opening_range_breakout --trades
+    python -m research.intraday_strategies.run --symbol HDFCBANK --only s2_breakout --trades
 
 It reads about 90 days of one-minute candles through the SmartAPI history cache (three requests the first time,
 none after that on the same day) and needs the broker settings in .env only when the cache is empty.
@@ -23,8 +23,7 @@ from orderbot.data.movers import stock_universe
 from .common import build_days, simulate, summary
 
 ROOT = Path(__file__).resolve().parents[2]
-STRATEGIES = ("s1_momentum", "s2_breakout", "s3_reversal", "s4_vwap_pullback", "s5_scalping", "s6_gap_and_go",
-              "s7_opening_range_breakout")
+STRATEGIES = ("s2_breakout", "s6_gap_and_go")  # the others were removed for accuracy below 40%; see README.md
 PIECES, PIECE_DAYS = 3, 30  # one SmartAPI minute-history request covers about 30 days
 
 
