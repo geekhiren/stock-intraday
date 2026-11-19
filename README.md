@@ -11,6 +11,16 @@ python -m pytest
 
 `config.yaml` leaves capital and per-trade risk unset. Relative data and log paths resolve beside the YAML file. SQLite timestamps use explicit UTC offsets. The JSON logs use IST.
 
+## Starting the paper dashboard each morning
+
+`start-orderbot.cmd` starts `python run.py --dashboard` from the project folder and appends its console output to `var/log/dashboard-console.log`. A weekday Windows scheduled task can run it before the open:
+
+```powershell
+schtasks /Create /TN "OrderBOT paper dashboard" /TR "\"C:\path	o\OrderBOT\start-orderbot.cmd\"" /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 09:00
+```
+
+The task runs only while you are signed in to Windows. A second start exits at once because the dashboard port is in use.
+
 ## SmartAPI login check
 
 Set the following variables in an untracked `.env` file beside `config.yaml`, using one `NAME=value` per line. Nonempty environment variables take precedence over `.env` values.
@@ -117,6 +127,32 @@ The dashboard prints its loopback address at startup. The fixture creates indepe
 Run `python run.py --dashboard` to use the configured journal. The dashboard process writes the dated Markdown report at the configured time, 15:35 IST by default, and catches up for that IST day when started after the cutoff. `python run.py --report YYYY-MM-DD` reads the same journal on demand and returns JSON by default. A reconciliation mismatch or missing fill or charge evidence gives the report command exit status 1. The report totals booked charges and independently recomputes each trade's net P&L from cumulative fill values. Older fills that lack touch-price evidence remain eligible for P&L reconciliation and are counted separately in the slippage comparison.
 
 Alerts for entry, exit, kill-switch and reconciliation failures are durable in SQLite. To route them to Telegram, set `alerts.telegram_enabled` in `config.yaml` and provide `ORDERBOT_TELEGRAM_TOKEN` and `ORDERBOT_TELEGRAM_CHAT_ID` in the dashboard process environment. Message delivery and retries run in the background while the dashboard process is running. A delivery timeout may result in a repeat message. Fixture dashboard sessions always use the local outbox. [Telegram Bot API](https://core.telegram.org/bots/api#sendmessage)
+
+### F&O stock movers
+
+`python run.py --dashboard` also scans the NSE cash price of every stock with listed futures, once a minute during the session, using the SmartAPI quote endpoint and the `.env` credentials. The dashboard shows the top gainers, top losers and advancer/decliner breadth. The "Holding highs" and "Holding lows" tags mark a stock on the trend side of VWAP and in the outer quarter of its day range. They are an untested watchlist aid and no strategy trades on them. The scan is read-only, stops after three failed logins, and runs once when the dashboard starts outside market hours. Fixture dashboards show synthetic quotes from the fixture file.
+
+### Stock intraday paper trading
+
+With `stocks.paper_trading: true` the dashboard process also paper-trades the scanned stocks. It never sends an order. The `stocks` section holds its own capital (₹1,00,000) and risk per trade (0.5%, ₹500), so the option risk inputs stay unset. It reuses the daily loss limit (2%), entry cap, loss-streak cap, square-off time and Stop trading latch from the option settings and uses no leverage.
+
+- **Stocks in play** (`stocks.sip_entries`). At 09:20 it ranks stocks by the volume of their first five minutes against their 14-session average and keeps the top `sip_candidates` at or above `sip_min_relative_volume`. Each is traded once, on a break of its five-minute range in the direction of that range's move, until `strategy_a.entry_close`. The stop is `sip_stop_atr` of the 14-session ATR, there is no target, and the position closes at the stop or the square-off. The rules follow Zarattini, Barbon and Aziz (2024), with the stop widened from 0.1 to 0.5 ATR because the published stop lost money after Indian intraday charges in a 46-session test of 69 F&O stocks. [Paper](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=4729284)
+- The 14-session figures come from SmartAPI minute history for every scanned stock, about 220 requests, and are saved for the day under `data.history_cache_dir`. Start the dashboard by about 09:05 so they are ready at 09:20. A later start skips this entry for the day.
+- It holds up to `max_positions` positions, each limited to an equal share of the capital, so two positions of ₹50,000.
+- Until `strategy_b.entry_window_end` it trades the first opening-range breakout, using the Strategy B rules: open at the range edge, gap agreement, breakout buffer, stop at the opposite edge and a 1.5R target. The range is the day's high and low at the first scan after 09:30, so the dashboard must be running by then. A later start skips this entry for the day.
+- The VWAP entry is off by default (`stocks.vwap_entries: false`). In a 60-session backtest of 20 stocks (21/08/2026 to 18/11/2026) it lost money in both the tuning and the validation period while the breakout stayed profitable. When switched on, and if the breakout did not trade, it takes a VWAP crossover in the direction of the day's move with a volume surge and RSI inside the Strategy A bands. The stop and target are the Strategy A ATR multiples. It needs about 22 minutes of scans before the first signal.
+- Stops are held between `min_stop_pct` and `max_stop_pct` of price. Entries need a tight spread, enough displayed quantity, and charges under the friction cap. Buys fill at the ask and sells at the bid.
+- Charges follow Angel One's published equity intraday rates: brokerage at the lower of ₹20 or 0.1% per order with a ₹5 minimum, STT on the sell side, exchange, SEBI, stamp duty and GST. [Angel One charges](https://www.angelone.in/exchange-transaction-charges)
+
+The dashboard has three screens: Stocks, Options and Backtest.
+
+- **Manual paper trades.** On the Stocks screen, type an F&O stock symbol and press Buy or Sell short. The trade uses the last scanned quote, the same risk sizing, a stop of at least `min_stop_pct`, a 2R target and the automatic exits. Close ends it at the current quote. The Stop trading latch, square-off time, daily loss limit and one-position rule still apply.
+- **Forward test.** The accuracy table counts every closed paper trade in the journal per strategy: trades, wins, accuracy, average win and loss, profit factor and net P&L after charges.
+- **Backtest.** The Backtest screen replays up to 25 stocks over up to 31 days of SmartAPI one-minute candles through the same trader code, in a temporary journal. Each candle close stands in for the minute quote with a one-tick spread. Past sessions are cached under `data.history_cache_dir`.
+
+Between the minute scans, open positions are re-quoted every five seconds and closed at the stop or target, so an exit fills within a few seconds of the level. The backtest mirrors this by checking each later candle's high and low. Entries and indicators still use the minute scan. A NIFTY direction filter (longs only while NIFTY is above its open) was tested over the same 60 sessions and left out: it helped the first 39 sessions and hurt the last 21.
+
+Entry prices are sampled once a minute, so an entry fills at the next scan's quote, and RSI, ATR and volume come from those samples. Results are an estimate until the trader moves to the tick feed. The daily report does not include stock trades. `python -m pytest tests/test_stock_paper.py` checks sizing, exits and charges to the paisa.
 
 ## Strategy B and end-to-end paper fixtures
 

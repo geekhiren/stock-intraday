@@ -12,11 +12,13 @@ from uuid import uuid4
 
 from orderbot.broker.angel_client import AngelClient, LoginError, read_credentials
 from orderbot.broker.instruments import load_master
+from orderbot.core.activity import record
 from orderbot.core.config import ConfigError, load_config, validate_runtime_paths
 from orderbot.core.event_log import open_logs
 from orderbot.core.ist_time import now_ist
 from orderbot.core.state_store import open_store
 from orderbot.data.capture import capture_session, compare_with_broker, load_replay
+from orderbot.data.movers import fixture_movers, movers_worker
 from orderbot.execution.exit_replay import replay_exits
 from orderbot.execution.replay import replay_execution
 from orderbot.options.replay import replay_options
@@ -41,11 +43,19 @@ def run_surface(config, directory, args, db, *, fixture_clock=None) -> int:
 
     fixture = fixture_clock is not None
     logs_context = nullcontext() if fixture else open_logs(config.logging, directory)
-    with make_server(config, db, fixture=fixture, clock=(lambda: fixture_clock) if fixture else now_ist) as server:
+    if fixture:
+        sample = fixture_movers(args.surface_fixture, fixture_clock)
+        movers_context = nullcontext(lambda: sample)
+    else:
+        movers_context = movers_worker(config, directory, db)
+    with movers_context as movers, make_server(config, db, fixture=fixture, movers=movers,
+                                               stocks=getattr(movers, "trader", None), backtest=getattr(movers, "backtest", None),
+                                               clock=(lambda: fixture_clock) if fixture else now_ist) as server:
         with logs_context as logs:
             alerts = nullcontext() if fixture else alert_worker(config.alerts, db, logs.application)
             reports = nullcontext() if fixture else daily_report_worker(config.reporting, db, directory, logs.application)
             with alerts, reports:
+                record("Dashboard", f"Started on port {server.server_port} · paper mode")
                 print(f"OrderBOT PAPER dashboard at http://127.0.0.1:{server.server_port}/", flush=True)
                 server.serve_forever()
     return 0

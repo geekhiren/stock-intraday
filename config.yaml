@@ -86,6 +86,29 @@ costs:
   stamp_buy_rate: "0.00003"
   gst_rate: "0.18"
   slippage_ticks: 1
+stocks:
+  paper_trading: true
+  vwap_entries: false
+  sip_entries: true
+  sip_range_minutes: 5
+  sip_candidates: 5
+  sip_min_relative_volume: "1"
+  sip_stop_atr: "0.5"
+  sip_baseline_days: 14
+  max_positions: 2
+  exit_on_rsi: false
+  exit_on_vwap_cross: false
+  watchlist_size: 10
+  watchlist_only: false
+  capital_inr: "100000"
+  risk_per_trade_pct: "0.5"
+  min_stop_pct: "0.6"
+  max_stop_pct: "1"
+  max_spread_fraction: "0.001"
+  brokerage_rate: "0.001"
+  brokerage_min_inr: "5"
+  stt_sell_rate: "0.00025"
+  exchange_including_ipft_rate: "0.000030699"
 execution:
   max_entry_premium: "400"
   partial_timeout_seconds: 10

@@ -159,7 +159,7 @@ def test_http_dashboard_reads_fixtures_and_stop_is_local_and_durable(tmp_path):
         try:
             page = requests.get(base, timeout=5)
             assert page.status_code == 200
-            assert page.text.count("<button") == 1
+            assert page.text.count('class="btn danger"') == 1
             assert "Stop trading" in page.text
             state = requests.get(base + "/api/status", timeout=5).json()
             assert state["mode"] == "PAPER" and state["broker"]["state"] == "simulated"
@@ -192,3 +192,20 @@ def test_http_dashboard_reads_fixtures_and_stop_is_local_and_durable(tmp_path):
         finally:
             server.shutdown()
             thread.join(timeout=5)
+
+
+def test_movers_rank_gainers_losers_and_skip_unusable_quotes():
+    from orderbot.data.movers import fixture_movers, stock_universe
+
+    movers = fixture_movers(FIXTURE, parse_timestamp(DATA["clock"]))
+    assert movers["state"] == "ok" and movers["at"].endswith("+05:30")
+    assert (movers["universe"], movers["quoted"], movers["advancers"], movers["decliners"]) == (16, 15, 8, 6)
+    assert [row["symbol"] for row in movers["gainers"][:2]] == ["RELIANCE", "TATAMOTORS"]
+    assert [row["symbol"] for row in movers["losers"][:2]] == ["BAJFINANCE", "ADANIENT"]
+    assert movers["gainers"][0]["setup"] == "holding_highs" and movers["losers"][0]["setup"] == "holding_lows"
+    assert movers["losers"][1]["setup"] is None
+    rows = [{"exch_seg": "NFO", "instrumenttype": "FUTSTK", "name": "SBIN", "token": "1", "symbol": "SBIN26NOV26FUT"},
+            {"exch_seg": "NSE", "instrumenttype": "", "name": "SBIN", "token": "3045", "symbol": "SBIN-EQ"},
+            {"exch_seg": "NSE", "instrumenttype": "", "name": "SBIN", "token": "9", "symbol": "SBIN-BL"},
+            {"exch_seg": "NSE", "instrumenttype": "", "name": "NOFUT", "token": "7", "symbol": "NOFUT-EQ"}]
+    assert stock_universe(rows) == {"3045": "SBIN"}

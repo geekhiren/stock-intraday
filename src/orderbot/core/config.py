@@ -167,6 +167,38 @@ class CostConfig(Section):
     slippage_ticks: Annotated[int, Field(strict=True, ge=0)]
 
 
+class StocksConfig(Section):
+    """Paper intraday trading of F&O stocks. Its capital is separate from the unset option risk inputs."""
+    paper_trading: Annotated[bool, Field(strict=True)]
+    vwap_entries: Annotated[bool, Field(strict=True)]
+    sip_entries: Annotated[bool, Field(strict=True)]
+    sip_range_minutes: Annotated[int, Field(strict=True, ge=1, le=60)]
+    sip_candidates: PositiveCount
+    sip_min_relative_volume: PositiveDecimal
+    sip_stop_atr: PositiveDecimal
+    sip_baseline_days: Annotated[int, Field(strict=True, ge=2, le=18)]
+    max_positions: Annotated[int, Field(strict=True, ge=1, le=5)]
+    exit_on_rsi: Annotated[bool, Field(strict=True)]
+    exit_on_vwap_cross: Annotated[bool, Field(strict=True)]
+    watchlist_size: PositiveCount
+    watchlist_only: Annotated[bool, Field(strict=True)]
+    capital_inr: PositiveDecimal
+    risk_per_trade_pct: PositivePercentage
+    min_stop_pct: PositivePercentage
+    max_stop_pct: PositivePercentage
+    max_spread_fraction: TurnoverRate
+    brokerage_rate: TurnoverRate
+    brokerage_min_inr: Annotated[Decimal, Field(ge=0, allow_inf_nan=False)]
+    stt_sell_rate: TurnoverRate
+    exchange_including_ipft_rate: TurnoverRate
+
+    @model_validator(mode="after")
+    def check_stop_band(self):
+        if self.min_stop_pct > self.max_stop_pct:
+            raise ValueError("The stock stop band must be ascending.")
+        return self
+
+
 class ExecutionConfig(Section):
     max_entry_premium: PositiveDecimal
     partial_timeout_seconds: PositiveSeconds
@@ -355,6 +387,7 @@ class Config(Section):
     options: OptionsConfig
     risk: RiskConfig
     costs: CostConfig
+    stocks: StocksConfig
     execution: ExecutionConfig
     strategy_a: StrategyAConfig
     strategy_b: StrategyBConfig

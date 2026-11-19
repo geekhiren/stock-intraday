@@ -7,7 +7,7 @@ from importlib.resources import files
 from pathlib import Path
 
 
-MIGRATIONS = ("schema.sql", "execution.sql", "strategy.sql", "exits.sql", "reporting.sql")
+MIGRATIONS = ("schema.sql", "execution.sql", "strategy.sql", "exits.sql", "reporting.sql", "stocks.sql", "stocks_manual.sql", "stocks_plays.sql")
 SCHEMA_VERSION = len(MIGRATIONS)
 
 

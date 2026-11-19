@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from functools import partial
 from hmac import compare_digest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -8,6 +8,8 @@ from pathlib import Path
 from secrets import token_urlsafe
 from sqlite3 import Error as DatabaseError
 
+from orderbot.broker.angel_client import RequestError
+from orderbot.core.activity import recent, record
 from orderbot.core.config import Config
 from orderbot.core.ist_time import as_ist, from_storage, now_ist, parse_timestamp
 from orderbot.core.money import PAISA, round_inr
@@ -94,13 +96,17 @@ def status_snapshot(config: Config, path: Path, at: datetime, *, fixture: bool) 
     }
 
 
+MAX_BACKTEST_SYMBOLS = 25
+MAX_BACKTEST_DAYS = 31
+
 _STATIC = {"/": ("index.html", "text/html"), "/dashboard.css": ("dashboard.css", "text/css"),
            "/dashboard.js": ("dashboard.js", "text/javascript")}
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
-    def __init__(self, *args, config, path, clock, fixture, stop_token, **kwargs):
+    def __init__(self, *args, config, path, clock, fixture, stop_token, movers, stocks, backtest, **kwargs):
         self.config, self.db, self.clock, self.fixture, self.stop_token = config, path, clock, fixture, stop_token
+        self.movers, self.stocks, self.backtest = movers, stocks, backtest
         super().__init__(*args, **kwargs)
 
     @property
@@ -116,7 +122,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Content-Security-Policy", "default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'")
+        self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; "
+                         "object-src 'none'; frame-ancestors 'none'; base-uri 'none'")
         self.end_headers()
         self.wfile.write(data)
 
@@ -135,12 +142,38 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif self.path == "/api/status":
             try:
                 value = status_snapshot(self.config, self.db, self.clock(), fixture=self.fixture)
+                value["stocks"] = self.stocks.snapshot(self.clock()) if self.stocks else None
             except (DatabaseError, ValueError, KeyError, TypeError, ArithmeticError):
                 self._json(503, {"error": "Journal snapshot unavailable."})
             else:
-                self._json(200, value | {"stop_token": self.stop_token})
+                movers = self.movers() if self.movers else None
+                # With no option tick feed running, a fresh stock scan is the evidence that the broker is reachable.
+                if value["broker"]["state"] in {"disconnected", "stale"} and movers and movers.get("state") == "ok" and (
+                    0 <= (self.clock() - parse_timestamp(movers["at"])).total_seconds() < 180
+                ):
+                    value["broker"] = {"state": "connected", "observed_at": movers["at"]}
+                self._json(200, value | {"stop_token": self.stop_token, "movers": movers, "activity": recent()})
         else:
             self._json(404, {"error": "Page not found."})
+
+    def _action(self, body: dict) -> dict:
+        if self.stocks is None or self.backtest is None:
+            raise ValueError("Stock paper trading is off in this session.")
+        if self.path == "/api/backtest":
+            symbols = [name.strip().upper() for name in body["symbols"].split(",") if name.strip()]
+            start, end = date.fromisoformat(body["from"]), date.fromisoformat(body["to"])
+            if not 1 <= len(symbols) <= MAX_BACKTEST_SYMBOLS:
+                raise ValueError(f"Enter 1 to {MAX_BACKTEST_SYMBOLS} stock symbols separated by commas.")
+            if not start <= end <= self.clock().date() or end - start > timedelta(days=MAX_BACKTEST_DAYS):
+                raise ValueError(f"Choose a past date range of at most {MAX_BACKTEST_DAYS} days.")
+            return self.backtest(symbols, start, end)
+        if self.path == "/api/stock-entry":
+            refusal = self.stocks.manual_entry(body["symbol"].strip().upper(), body["side"], self.clock())
+        else:
+            refusal = self.stocks.manual_exit(int(body["trade_id"]), self.clock())
+        if refusal:
+            raise ValueError(refusal)
+        return {"ok": True}
 
     def do_POST(self):
         token = self.headers.get("X-OrderBOT-Stop", "").encode("utf-8")
@@ -148,6 +181,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
             compare_digest(token, self.stop_token.encode("ascii"))
         ):
             self._json(403, {"error": "Use the stop control on the local dashboard."})
+        elif self.path in {"/api/stock-entry", "/api/stock-exit", "/api/backtest"}:
+            try:
+                self._json(200, self._action(json.loads(self.rfile.read(min(int(self.headers.get("Content-Length", 0)), 4096)))))
+            except (ValueError, KeyError, TypeError, AttributeError, RequestError) as exc:
+                if self.path == "/api/backtest":
+                    record("Backtest", str(exc) if isinstance(exc, (ValueError, RequestError)) else "Malformed request.", error=True)
+                # ValueError and RequestError carry readable, secret-free reasons; the rest mean a malformed request.
+                self._json(400, {"error": str(exc) if isinstance(exc, (ValueError, RequestError)) else "Malformed request."})
+            except DatabaseError:
+                self._json(503, {"error": "The paper journal is unavailable."})
         elif self.path != "/api/stop":
             self._json(404, {"error": "Page not found."})
         else:
@@ -159,9 +202,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._json(200, {"halted": reason is not None, "reason": reason})
 
 
-def make_server(config: Config, path: Path, *, clock=now_ist, fixture=False, port=None) -> ThreadingHTTPServer:
+def make_server(config: Config, path: Path, *, clock=now_ist, fixture=False, port=None, movers=None,
+                stocks=None, backtest=None) -> ThreadingHTTPServer:
+    """`movers()` returns the stock scan, `stocks` is the stock paper trader and `backtest(symbols, start, end)` replays history."""
     if config.runtime.mode != "paper" or config.runtime.live_enabled:
         raise ValueError("The dashboard in this build requires paper mode.")
     handler = partial(DashboardHandler, config=config, path=path, clock=clock, fixture=fixture,
-                      stop_token=token_urlsafe())
+                      stop_token=token_urlsafe(), movers=movers, stocks=stocks, backtest=backtest)
     return ThreadingHTTPServer(("127.0.0.1", config.reporting.dashboard_port if port is None else port), handler)

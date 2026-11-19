@@ -21,6 +21,7 @@ from orderbot.core.ist_time import as_ist, now_ist, require_aware
 
 LOGIN_ROUTE = "/rest/auth/angelbroking/user/v1/loginByPassword"
 HISTORY_ROUTE = "/rest/secure/angelbroking/historical/v1/getCandleData"
+QUOTE_ROUTE = "/rest/secure/angelbroking/market/v1/quote/"
 
 
 class LoginError(RuntimeError):
@@ -176,9 +177,19 @@ class AngelClient:
             raise RequestError("SmartAPI history response did not contain a candle array.")
         return data
 
+    def quotes(self, credentials: Credentials, session: Session, exchange: str, tokens: list[str]) -> list:
+        """Full-mode market quotes for up to 50 tokens. Read-only market data."""
+        headers = self._headers(credentials) | {"Authorization": "Bearer " + session.jwt_token}
+        data = self._post("quote", QUOTE_ROUTE, headers, lambda: {
+            "mode": "FULL", "exchangeTokens": {exchange: list(tokens)},
+        })
+        if not isinstance(data, dict) or not isinstance(data.get("fetched"), list):
+            raise RequestError("SmartAPI quote response did not contain fetched quotes.")
+        return data["fetched"]
+
     def _post(self, action: str, route: str, headers: dict, payload: Callable[[], dict]):
-        if (action, route) not in {("login", LOGIN_ROUTE), ("history", HISTORY_ROUTE)}:
-            raise RequestError("This paper-mode client only supports login and candle history.")
+        if (action, route) not in {("login", LOGIN_ROUTE), ("history", HISTORY_ROUTE), ("quote", QUOTE_ROUTE)}:
+            raise RequestError("This paper-mode client only supports login, candle history and quotes.")
         with self._rest_lock:
             delay = self._next_request_at - monotonic()
             if delay > 0:

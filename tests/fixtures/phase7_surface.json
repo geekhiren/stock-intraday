@@ -29,6 +29,29 @@
     "volume_surge": "pass", "rsi": "pass", "pivot": "disabled", "liquidity": "fail",
     "time_window": "pass", "iv": "not_evaluated"
   },
+  "movers": {
+    "note": "Synthetic cash quotes in SmartAPI FULL-mode shape.",
+    "universe": {"9000": "RELIANCE", "9001": "TATAMOTORS", "9002": "SBIN", "9003": "ICICIBANK", "9004": "LT", "9005": "BHARTIARTL", "9006": "ITC", "9007": "HDFCBANK", "9008": "AXISBANK", "9009": "TCS", "9010": "WIPRO", "9011": "HINDUNILVR", "9012": "INFY", "9013": "ADANIENT", "9014": "BAJFINANCE", "9015": "IDEA"},
+    "quotes": [
+      {"exchange": "NSE", "tradingSymbol": "RELIANCE-EQ", "symbolToken": "9000", "ltp": 1532.68, "open": 1482.0, "high": 1535.79, "low": 1491.33, "close": 1482.0, "netChange": 50.68, "percentChange": 3.42, "avgPrice": 1526.75, "tradeVolume": 9800000},
+      {"exchange": "NSE", "tradingSymbol": "TATAMOTORS-EQ", "symbolToken": "9001", "ltp": 938.69, "open": 912.5, "high": 941.98, "low": 914.6, "close": 912.5, "netChange": 26.19, "percentChange": 2.87, "avgPrice": 935.04, "tradeVolume": 14200000},
+      {"exchange": "NSE", "tradingSymbol": "SBIN-EQ", "symbolToken": "9002", "ltp": 821.17, "open": 804.2, "high": 825.76, "low": 801.63, "close": 804.2, "netChange": 16.97, "percentChange": 2.11, "avgPrice": 817.95, "tradeVolume": 11500000},
+      {"exchange": "NSE", "tradingSymbol": "ICICIBANK-EQ", "symbolToken": "9003", "ltp": 1339.62, "open": 1318.0, "high": 1358.6, "low": 1319.06, "close": 1318.0, "netChange": 21.62, "percentChange": 1.64, "avgPrice": 1344.89, "tradeVolume": 7300000},
+      {"exchange": "NSE", "tradingSymbol": "LT-EQ", "symbolToken": "9004", "ltp": 3698.86, "open": 3655.0, "high": 3721.89, "low": 3612.24, "close": 3655.0, "netChange": 43.86, "percentChange": 1.2, "avgPrice": 3684.24, "tradeVolume": 1900000},
+      {"exchange": "NSE", "tradingSymbol": "BHARTIARTL-EQ", "symbolToken": "9005", "ltp": 1735.8, "open": 1721.0, "high": 1769.36, "low": 1717.73, "close": 1721.0, "netChange": 14.8, "percentChange": 0.86, "avgPrice": 1742.68, "tradeVolume": 3100000},
+      {"exchange": "NSE", "tradingSymbol": "ITC-EQ", "symbolToken": "9006", "ltp": 440.4, "open": 438.6, "high": 445.67, "low": 432.51, "close": 438.6, "netChange": 1.8, "percentChange": 0.41, "avgPrice": 438.65, "tradeVolume": 8800000},
+      {"exchange": "NSE", "tradingSymbol": "HDFCBANK-EQ", "symbolToken": "9007", "ltp": 1766.12, "open": 1764.0, "high": 1795.76, "low": 1742.84, "close": 1764.0, "netChange": 2.12, "percentChange": 0.12, "avgPrice": 1773.18, "tradeVolume": 6600000},
+      {"exchange": "NSE", "tradingSymbol": "AXISBANK-EQ", "symbolToken": "9008", "ltp": 1189.0, "open": 1189.0, "high": 1206.83, "low": 1171.16, "close": 1189.0, "netChange": 0.0, "percentChange": 0.0, "avgPrice": 1193.76, "tradeVolume": 4000000},
+      {"exchange": "NSE", "tradingSymbol": "TCS-EQ", "symbolToken": "9009", "ltp": 3996.75, "open": 4012.0, "high": 4067.76, "low": 3947.4, "close": 4012.0, "netChange": -15.25, "percentChange": -0.38, "avgPrice": 4012.8, "tradeVolume": 1700000},
+      {"exchange": "NSE", "tradingSymbol": "WIPRO-EQ", "symbolToken": "9010", "ltp": 556.96, "open": 562.3, "high": 568.77, "low": 551.9, "close": 562.3, "netChange": -5.34, "percentChange": -0.95, "avgPrice": 559.21, "tradeVolume": 5900000},
+      {"exchange": "NSE", "tradingSymbol": "HINDUNILVR-EQ", "symbolToken": "9011", "ltp": 2408.04, "open": 2440.0, "high": 2465.14, "low": 2391.94, "close": 2440.0, "netChange": -31.96, "percentChange": -1.31, "avgPrice": 2417.8, "tradeVolume": 1300000},
+      {"exchange": "NSE", "tradingSymbol": "INFY-EQ", "symbolToken": "9012", "ltp": 1840.73, "open": 1876.0, "high": 1890.26, "low": 1833.98, "close": 1876.0, "netChange": -35.27, "percentChange": -1.88, "avgPrice": 1848.23, "tradeVolume": 6200000},
+      {"exchange": "NSE", "tradingSymbol": "ADANIENT-EQ", "symbolToken": "9013", "ltp": 2876.31, "open": 2954.0, "high": 2913.53, "low": 2824.91, "close": 2954.0, "netChange": -77.69, "percentChange": -2.63, "avgPrice": 2864.49, "tradeVolume": 2800000},
+      {"exchange": "NSE", "tradingSymbol": "BAJFINANCE-EQ", "symbolToken": "9014", "ltp": 6894.3, "open": 7120.0, "high": 7095.08, "low": 6881.48, "close": 7120.0, "netChange": -225.7, "percentChange": -3.17, "avgPrice": 6922.78, "tradeVolume": 1100000},
+      {"exchange": "NSE", "tradingSymbol": "IDEA-EQ", "symbolToken": "9015", "ltp": 0, "open": 0, "high": 0, "low": 0, "close": 9.1, "netChange": 0, "percentChange": 0, "avgPrice": 0, "tradeVolume": 0},
+      {"exchange": "NSE", "tradingSymbol": "UNLISTED-EQ", "symbolToken": "1", "ltp": 10, "high": 11, "low": 9, "percentChange": 9.9, "avgPrice": 10, "tradeVolume": 5}
+    ]
+  },
   "expected": {
     "net_paise": 16701, "charges_paise": 13199, "slippage_paise": 1300, "trade_count": 2, "skipped_count": 3
   }

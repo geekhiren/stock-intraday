@@ -153,8 +153,17 @@ def report_in(connection, day: date, until: datetime | None = None) -> dict:
     covered = not trades or any(item[4] for item in checked)
     actual = exact_paise(round_inr(sum((item[1] for item in checked), Decimal(0)))) if covered else None
     model = exact_paise(round_inr(sum((item[2] for item in checked), Decimal(0)))) if covered else None
+    stock_trades = [{
+        "symbol": row["symbol"], "strategy": row["strategy"], "side": row["side"], "quantity": row["quantity"],
+        "entry_at": from_storage(row["entry_at_utc"]).isoformat(), "exit_at": from_storage(row["exit_at_utc"]).isoformat(),
+        "entry": row["entry_price"], "exit": row["exit_price"], "exit_reason": row["exit_reason"],
+        "charges_paise": row["charges_paise"], "net_paise": row["net_paise"],
+    } for row in connection.execute(
+        "SELECT * FROM stock_trades WHERE exit_at_utc >= ? AND exit_at_utc < ? ORDER BY exit_at_utc, trade_id", (start, end))]
     return {
         "date": day.isoformat(), "mode": "PAPER", "timezone": "Asia/Kolkata",
+        "stock_trades": stock_trades, "stock_net_paise": sum(trade["net_paise"] for trade in stock_trades),
+        "stock_charges_paise": sum(trade["charges_paise"] for trade in stock_trades),
         "net_paise": net, "charges_paise": charges, "trades": trades, "skips": skips,
         "slippage": {"actual_paise": actual, "model_paise": model,
                      "delta_paise": actual - model if covered else None, "unavailable_orders": sum(x[3] for x in checked)},
@@ -207,6 +216,20 @@ def render_markdown(report: dict) -> str:
             lines.append("| " + " | ".join(map(_cell, values)) + " |")
     else:
         lines.append("No skipped signals.")
+    stock_trades = report["stock_trades"]
+    wins = sum(trade["net_paise"] > 0 for trade in stock_trades)
+    lines.extend(["", "## Stock intraday paper trades", ""])
+    if stock_trades:
+        lines.extend([f"- Net P&L {format_paise(report['stock_net_paise'])} after charges of {format_paise(report['stock_charges_paise'])}",
+                      f"- {wins} won of {len(stock_trades)} · accuracy {100 * wins / len(stock_trades):.0f}%", "",
+                      "| Entry IST | Exit IST | Stock | Strategy | Side | Qty | Entry | Exit | Net | Exit reason |",
+                      "| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- |"])
+        for trade in stock_trades:
+            values = (_ist_clock(trade["entry_at"]), _ist_clock(trade["exit_at"]), trade["symbol"], trade["strategy"], trade["side"],
+                      trade["quantity"], trade["entry"], trade["exit"], format_paise(trade["net_paise"]), trade["exit_reason"])
+            lines.append("| " + " | ".join(map(_cell, values)) + " |")
+    else:
+        lines.append("No closed stock trades.")
     return "\n".join(lines) + "\n"
 
 

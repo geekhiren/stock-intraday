@@ -4,54 +4,189 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="orderbot-refresh-seconds" content="{{refresh_seconds}}">
-  <title>OrderBOT · Session monitor</title>
+  <title>OrderBOT · Trading desk</title>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/dashboard.css">
   <script src="/dashboard.js" defer></script>
 </head>
 <body>
-  <header class="masthead">
-    <div class="masthead-inner">
-      <div class="brand"><span class="brand-mark" aria-hidden="true"></span>OrderBOT</div>
-      <strong class="mode" id="mode">PAPER</strong>
-      <div class="masthead-status"><time id="clock">—</time><span id="broker" class="broker" data-state="disconnected">Connecting to journal</span></div>
-      <button id="stop" type="button" disabled><span aria-hidden="true"></span>Stop trading</button>
-    </div>
-  </header>
+<div class="app">
+  <aside class="side">
+    <div class="brand"><span class="brand-mark" aria-hidden="true"></span>OrderBOT</div>
+    <nav class="nav" aria-label="Screens">
+      <h4>Trading</h4>
+      <a class="nav-item" href="#stocks" data-tab="stocks">Stocks</a>
+      <a class="nav-item" href="#options" data-tab="options">Options</a>
+      <h4>Research</h4>
+      <a class="nav-item" href="#backtest" data-tab="backtest">Backtest</a>
+      <h4>System</h4>
+      <a class="nav-item" href="#jobs" data-tab="jobs">Background jobs</a>
+    </nav>
+    <div class="side-card"><strong class="pill brand" id="mode">PAPER</strong><p>Practice money only. No orders reach the broker.</p></div>
+  </aside>
   <main>
-    <div class="title-row">
-      <h1>Session monitor</h1>
-      <p id="session">NIFTY</p>
+    <div class="topbar">
+      <span id="broker" class="broker" data-state="disconnected">Connecting to journal</span>
+      <time id="clock">—</time>
+      <button id="stop" class="btn danger" type="button" disabled>Stop trading</button>
     </div>
+    <div class="content">
     <p id="notice" class="notice" aria-live="polite" hidden></p>
-    <div class="overview">
-      <section class="panel net" aria-labelledby="net-title">
-        <h2 id="net-title">Realized net P&amp;L</h2>
-        <div id="net" class="big-value">—</div>
-        <div class="net-footer"><span id="reconciliation">Checking journal</span><span id="limit">Daily loss limit —</span></div>
+
+    <div class="page" data-page="stocks">
+      <div class="title-row"><h1>Stock intraday</h1><p id="stocks-status">Off</p></div>
+      <div class="kpis">
+        <section class="panel net" aria-labelledby="stocks-net-title">
+          <h2 id="stocks-net-title">Net P&amp;L today · paper</h2>
+          <div id="stocks-net" class="big-value">—</div>
+          <div class="net-footer"><span id="stocks-capital">Capital —</span><span id="stocks-risk">Risk per trade —</span><span id="stocks-limit">Daily loss limit —</span></div>
+        </section>
+        <section class="panel tile" aria-labelledby="accuracy-title">
+          <h2 id="accuracy-title">Accuracy</h2>
+          <div id="stocks-accuracy" class="tile-value">—</div>
+          <p id="stocks-accuracy-note" class="muted">&nbsp;</p>
+        </section>
+        <section class="panel tile" aria-labelledby="total-title">
+          <h2 id="total-title">All paper trades</h2>
+          <div id="stocks-total" class="tile-value">—</div>
+          <p id="stocks-total-note" class="muted">&nbsp;</p>
+        </section>
+        <section class="panel tile" aria-labelledby="breadth-title">
+          <h2 id="breadth-title">F&amp;O breadth</h2>
+          <div id="breadth" class="tile-value">—</div>
+          <div id="breadth-bar" class="breadth-bar" hidden></div>
+          <p id="breadth-note" class="muted">&nbsp;</p>
+        </section>
+      </div>
+      <section class="panel" aria-labelledby="trades-stock-title">
+        <div class="section-heading"><h2 id="trades-stock-title">Paper trades today</h2>
+          <form id="manual" class="inline-form">
+            <label for="manual-symbol">Manual trade</label>
+            <input id="manual-symbol" name="symbol" placeholder="HDFCBANK" autocomplete="off" required maxlength="20">
+            <button type="submit" value="long" class="btn primary">Buy</button>
+            <button type="submit" value="short" class="btn">Sell short</button>
+          </form>
+        </div>
+        <p id="manual-message" class="muted form-message" aria-live="polite">The bot also trades automatically. Up to 2 positions of ₹50,000 each. A manual trade uses the same ₹ risk, stop, target and auto exit.</p>
+        <div class="table-scroll"><table><thead><tr><th scope="col">Stock</th><th scope="col">Setup</th><th scope="col" class="right">Qty</th><th scope="col" class="right">Entry</th><th scope="col" class="right">Stop</th><th scope="col" class="right">Target</th><th scope="col" class="right">Last / exit</th><th scope="col">Status</th><th scope="col" class="right">Net P&amp;L</th></tr></thead><tbody id="stock-trades"></tbody></table></div>
+        <p class="muted footnote">Simulated fills from one-minute quotes with full intraday charges. No orders reach the broker.</p>
       </section>
-      <section class="panel" aria-labelledby="position-title">
-        <h2 id="position-title">Open position</h2>
-        <div id="positions" class="position-group"><p class="muted">Reading journal</p></div>
+      <section class="panel" aria-labelledby="forward-title">
+        <div class="section-heading"><h2 id="forward-title">Strategy accuracy · forward test</h2><p>Every closed paper trade so far</p></div>
+        <div class="table-scroll"><table><thead><tr><th scope="col">Strategy</th><th scope="col" class="right">Trades</th><th scope="col" class="right">Won</th><th scope="col" class="right">Accuracy</th><th scope="col" class="right">Avg win</th><th scope="col" class="right">Avg loss</th><th scope="col" class="right">Profit factor</th><th scope="col" class="right">Net P&amp;L</th></tr></thead><tbody id="forward-stats"></tbody></table></div>
+      </section>
+      <section class="panel" aria-labelledby="watchlist-title">
+        <div class="section-heading"><h2 id="watchlist-title">Today's watchlist</h2><p>Scored before the open on 14 sessions of history</p></div>
+        <div class="table-scroll"><table><thead><tr><th scope="col">Stock</th><th scope="col" class="right">Score</th><th scope="col" class="right">Daily range (ATR)</th><th scope="col" class="right">Last session volume</th><th scope="col" class="right">5-session move</th><th scope="col" class="right">Today</th></tr></thead><tbody id="watchlist"></tbody></table></div>
+        <p class="muted footnote">Higher scores mean a stock moves more, was busier than usual and has been trending. It is a list to watch, not a signal to trade.</p>
+      </section>
+      <section class="panel" aria-labelledby="movers-title">
+        <div class="section-heading"><h2 id="movers-title">F&amp;O stock movers</h2><p id="movers-status">Scanner starting</p></div>
+        <div class="movers">
+          <div>
+            <h3 class="positive">Top gainers</h3>
+            <ol id="gainers" class="mover-list"></ol>
+          </div>
+          <div>
+            <h3 class="negative">Top losers</h3>
+            <ol id="losers" class="mover-list"></ol>
+          </div>
+        </div>
+        <p class="muted footnote">NSE cash prices of stocks with listed futures. Tags describe where price sits against VWAP and the day's range. They are a watchlist, not trade signals.</p>
       </section>
     </div>
-    <section class="panel gates-panel" aria-labelledby="gates-title">
-      <div class="section-heading"><h2 id="gates-title">Strategy A gates</h2><p id="candle">NIFTY futures · 1 min</p></div>
-      <ul id="gates" class="gate-grid"></ul>
-    </section>
-    <div class="activity">
-      <section class="panel" aria-labelledby="trades-title">
-        <div class="section-heading"><h2 id="trades-title">Closed trades</h2><p id="trade-count"></p></div>
-        <div class="table-scroll"><table><thead><tr><th scope="col">Exit IST</th><th scope="col">Contract</th><th scope="col" class="right">Qty</th><th scope="col" class="right">Net P&amp;L</th></tr></thead><tbody id="trades"></tbody></table></div>
+
+    <div class="page" data-page="options" hidden>
+      <div class="title-row"><h1>NIFTY options · call and put</h1><p id="session">NIFTY</p></div>
+      <div class="kpis">
+        <section class="panel net" aria-labelledby="net-title">
+          <h2 id="net-title">Realised net P&amp;L · paper</h2>
+          <div id="net" class="big-value">—</div>
+          <div class="net-footer"><span id="reconciliation">Checking journal</span><span id="limit">Daily loss limit —</span></div>
+        </section>
+        <section class="panel tile" aria-labelledby="count-title">
+          <h2 id="count-title">Trades today</h2>
+          <div id="trade-total" class="tile-value">—</div>
+          <p id="trade-split" class="muted">&nbsp;</p>
+        </section>
+        <section class="panel tile" aria-labelledby="win-title">
+          <h2 id="win-title">Win rate</h2>
+          <div id="win-rate" class="tile-value">—</div>
+          <p id="skip-total" class="muted">&nbsp;</p>
+        </section>
+        <section class="panel tile" aria-labelledby="feed-title">
+          <h2 id="feed-title">Option engine</h2>
+          <div id="option-engine" class="tile-value">—</div>
+          <p class="muted">Runs from the paper trial and replay commands</p>
+        </section>
+      </div>
+      <div class="overview">
+        <section class="panel" aria-labelledby="position-title">
+          <h2 id="position-title">Open position</h2>
+          <div id="positions" class="position-group"><p class="muted">Reading journal</p></div>
+        </section>
+        <section class="panel gates-panel" aria-labelledby="gates-title">
+          <div class="section-heading"><h2 id="gates-title">Strategy A gates</h2><p id="candle">NIFTY futures · 1 min</p></div>
+          <ul id="gates" class="gate-grid"></ul>
+        </section>
+      </div>
+      <div class="activity">
+        <section class="panel" aria-labelledby="trades-title">
+          <div class="section-heading"><h2 id="trades-title">Closed trades</h2><p id="trade-count"></p></div>
+          <div class="table-scroll"><table><thead><tr><th scope="col">Exit IST</th><th scope="col">Contract</th><th scope="col" class="right">Qty</th><th scope="col" class="right">Net P&amp;L</th></tr></thead><tbody id="trades"></tbody></table></div>
+        </section>
+        <section class="panel" aria-labelledby="skips-title">
+          <div class="section-heading"><h2 id="skips-title">Skipped signals</h2><p id="skip-count"></p></div>
+          <div class="table-scroll"><table><thead><tr><th scope="col">Time IST</th><th scope="col">Reason</th></tr></thead><tbody id="skips"></tbody></table></div>
+        </section>
+      </div>
+    </div>
+
+    <div class="page" data-page="backtest" hidden>
+      <div class="title-row"><h1>Backtest</h1><p>Stock strategies on past one-minute candles</p></div>
+      <section class="panel" aria-labelledby="backtest-title">
+        <h2 id="backtest-title">Run a backtest</h2>
+        <form id="backtest-form" class="inline-form wide">
+          <label for="backtest-symbols">Stocks</label>
+          <input id="backtest-symbols" name="symbols" value="HDFCBANK, RELIANCE, SBIN, ICICIBANK, INFY, AXISBANK, BHARTIARTL, MARUTI, M&amp;M, HINDALCO, PNB, ETERNAL" required maxlength="200">
+          <label for="backtest-from">From</label>
+          <input id="backtest-from" name="from" type="date" required>
+          <label for="backtest-to">To</label>
+          <input id="backtest-to" name="to" type="date" required>
+          <button type="submit" class="btn primary">Run backtest</button>
+        </form>
+        <p id="backtest-message" class="muted form-message" aria-live="polite">Up to 25 F&amp;O stocks and 31 days. It replays the live paper trader's rules, sizing and charges. Stocks in play are ranked among the stocks you list, so list at least 10.</p>
       </section>
-      <section class="panel" aria-labelledby="skips-title">
-        <div class="section-heading"><h2 id="skips-title">Skipped signals</h2><p id="skip-count"></p></div>
-        <div class="table-scroll"><table><thead><tr><th scope="col">Time IST</th><th scope="col">Reason</th></tr></thead><tbody id="skips"></tbody></table></div>
+      <section class="panel" aria-labelledby="backtest-stats-title">
+        <div class="section-heading"><h2 id="backtest-stats-title">Backtest accuracy</h2><p id="backtest-range"></p></div>
+        <div class="table-scroll"><table><thead><tr><th scope="col">Strategy</th><th scope="col" class="right">Trades</th><th scope="col" class="right">Won</th><th scope="col" class="right">Accuracy</th><th scope="col" class="right">Avg win</th><th scope="col" class="right">Avg loss</th><th scope="col" class="right">Profit factor</th><th scope="col" class="right">Net P&amp;L</th></tr></thead><tbody id="backtest-stats"></tbody></table></div>
+      </section>
+      <section class="panel" aria-labelledby="backtest-trades-title">
+        <h2 id="backtest-trades-title">Backtest trades</h2>
+        <div class="table-scroll"><table><thead><tr><th scope="col">Entry IST</th><th scope="col">Stock</th><th scope="col">Setup</th><th scope="col" class="right">Qty</th><th scope="col" class="right">Entry</th><th scope="col" class="right">Exit</th><th scope="col">Exit reason</th><th scope="col" class="right">Net P&amp;L</th></tr></thead><tbody id="backtest-trades"></tbody></table></div>
+        <p class="muted footnote">Fills assume a one-tick spread at each candle close, and stops are checked once a minute. Past results do not promise future profit.</p>
       </section>
     </div>
+
+    <div class="page" data-page="jobs" hidden>
+      <div class="title-row"><h1>Background jobs</h1><p>What the bot is doing behind the scenes since it started</p></div>
+      <section class="panel" aria-labelledby="jobs-title">
+        <h2 id="jobs-title">Latest from each job</h2>
+        <div class="table-scroll"><table><thead><tr><th scope="col">Job</th><th scope="col">Last update IST</th><th scope="col">Status</th></tr></thead><tbody id="jobs"></tbody></table></div>
+      </section>
+      <section class="panel" aria-labelledby="log-title">
+        <div class="section-heading"><h2 id="log-title">Log</h2><p id="log-count"></p></div>
+        <div class="table-scroll"><table><thead><tr><th scope="col">Time IST</th><th scope="col">Job</th><th scope="col">Message</th></tr></thead><tbody id="log"></tbody></table></div>
+        <p class="muted footnote">Newest first. The log restarts when the bot restarts; the full record is in var/log.</p>
+      </section>
+    </div>
+
     <section class="panel" aria-labelledby="alerts-title">
       <div class="section-heading"><h2 id="alerts-title">Recent alerts</h2><p id="delivery"></p></div>
       <div class="table-scroll"><table><thead><tr><th scope="col">Time IST</th><th scope="col">Event</th><th scope="col">Details</th><th scope="col" class="right">Delivery</th></tr></thead><tbody id="alerts"></tbody></table></div>
     </section>
+    </div>
   </main>
+</div>
 </body>
 </html>
