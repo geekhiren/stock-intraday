@@ -7,9 +7,10 @@ from pathlib import Path
 from orderbot.broker.history import parse_minutes
 from orderbot.core.config import load_config
 from orderbot.core.ist_time import parse_timestamp
-from orderbot.data.candle_builder import MINUTE
+from orderbot.data.candle_builder import MINUTE, TradingSession
 from orderbot.data.replay import AnalyzedBar
-from orderbot.strategy.real_trial import BrokerCandleConfirmations, compare_trial_candles
+from orderbot.strategy import real_trial
+from orderbot.strategy.real_trial import BrokerCandleConfirmations, compare_trial_candles, trial_window
 
 
 HERE = Path(__file__).resolve().parent
@@ -51,3 +52,36 @@ def test_quote_comparison_normalizes_volume_and_keeps_price_differences():
     mismatch = {"capture": str(price), "reference": str(CANDLE.high)}
     assert difference == {"at": OPEN.isoformat(), "high": mismatch, "close": mismatch}
     assert result["matched_volume_minutes"] == 1
+
+
+def test_through_close_distinguishes_preopen_and_mid_session_coverage():
+    session = TradingSession.from_config(OPEN.date(), CONFIG.market)
+    delay = timedelta(seconds=CONFIG.paper_trial.broker_candle_max_age_seconds)
+    duration = CONFIG.paper_trial.duration_minutes
+    assert trial_window(session, session.opens_at - MINUTE, duration, delay, through_close=True) == (
+        session.opens_at, session.closes_at,
+    )
+    assert trial_window(session, OPEN + timedelta(seconds=1), duration, delay, through_close=True) == (
+        OPEN + MINUTE, session.closes_at,
+    )
+    assert trial_window(session, OPEN, duration, delay, through_close=False) == (OPEN, OPEN + duration * MINUTE)
+
+
+def test_through_close_keeps_clock_events_after_socket_closes(monkeypatch):
+    session = TradingSession.from_config(OPEN.date(), CONFIG.market)
+    time = [session.closes_at - timedelta(seconds=1)]
+
+    class Market:
+        def stream(self, *_args):
+            time[0] = session.closes_at
+            return (event for event in ())
+
+    def advance(seconds):
+        time[0] += timedelta(seconds=seconds)
+
+    monkeypatch.setattr(real_trial, "MarketFeed", lambda _config: Market())
+    monkeypatch.setattr(real_trial, "now_ist", lambda: time[0])
+    monkeypatch.setattr(real_trial, "sleep", advance)
+    events = list(real_trial._trial_events(CONFIG, session, {}, {}, (2, "test"), through_close=True))
+    assert all(event.raw is None and event.received_at > session.closes_at for event in events)
+    assert events[-1].received_at == session.closes_at + timedelta(seconds=CONFIG.paper_trial.broker_candle_max_age_seconds)

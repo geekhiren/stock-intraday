@@ -77,6 +77,8 @@ def main() -> int:
     parser.add_argument("--report-format", choices=("json", "markdown"), help="Daily report format (default JSON)")
     parser.add_argument("--fixture-funding", action="store_true", help="Use synthetic risk inputs only for the isolated replay")
     parser.add_argument("--fixture-scenario", choices=("ohl_trade", "no_ohl_trade"), help="Select the fixture's opening gap")
+    parser.add_argument("--through-close", action="store_true", help="Continue a real-data paper trial through market close")
+    parser.add_argument("--session-date", type=date.fromisoformat, help="Wait for a dated through-close trial to open")
     args = parser.parse_args()
     if args.option_token and not args.capture_data:
         parser.error("--option-token requires --capture-data")
@@ -86,6 +88,10 @@ def main() -> int:
         parser.error("--report-format requires --report")
     if (args.fixture_funding or args.fixture_scenario) and not args.replay_paper_session:
         parser.error("--fixture-funding and --fixture-scenario require --replay-paper-session")
+    if args.through_close and not args.real_paper_trial:
+        parser.error("--through-close requires --real-paper-trial")
+    if args.session_date and not args.through_close:
+        parser.error("--session-date requires --through-close")
 
     try:
         config = load_config(args.config)
@@ -107,7 +113,8 @@ def main() -> int:
         if args.real_paper_trial:
             if args.strategy:
                 config = config.model_copy(update={"runtime": config.runtime.model_copy(update={"strategy": args.strategy})})
-            report = run_real_paper_trial(config, directory, args.real_paper_trial)
+            report = run_real_paper_trial(config, directory, args.real_paper_trial, through_close=args.through_close,
+                                          session_date=args.session_date)
             print(json.dumps({key: report[key] for key in (
                 "report_path", "finalized_minutes", "paper_orders", "outcome_counts", "comparison", "error",
             ) if key in report}, indent=2))

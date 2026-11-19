@@ -8,10 +8,11 @@ from functools import partial
 import json
 from pathlib import Path
 from sqlite3 import Error as DatabaseError
+from time import sleep
 from uuid import uuid4
 
 from orderbot.broker.angel_client import AngelClient, LoginError, RequestError, read_credentials
-from orderbot.broker.history import HistoryError, parse_minutes
+from orderbot.broker.history import HistoryCache, HistoryError, parse_minutes
 from orderbot.broker.instruments import NSE_CASH, NSE_DERIVATIVES, load_master
 from orderbot.broker.ws_client import FeedError, FeedNotice, MarketFeed, decode_snap
 from orderbot.core.atomic_file import atomic_path
@@ -101,8 +102,59 @@ def _warmup(config, fetch, session, sessions):
     return previous, current, end
 
 
+def trial_window(session, connection, duration_minutes, final_wait, *, through_close):
+    first = max(session.opens_at, minute_floor(connection) + (MINUTE if connection != minute_floor(connection) else timedelta()))
+    last = session.closes_at if through_close else min(
+        first + duration_minutes * MINUTE, minute_floor(session.closes_at - final_wait),
+    )
+    if first >= last:
+        raise FeedError("The session is too close to ending for a confirmed candle trial.")
+    return first, last
+
+
+def _trial_events(config, session, headers, subscriptions, required, *, through_close):
+    feed = MarketFeed(config.data)
+    while now_ist() < session.closes_at:
+        with closing(feed.stream(headers, subscriptions, required, session)) as events:
+            yield from events
+        if not through_close:
+            return
+        retry_at = min(session.closes_at, now_ist() + timedelta(seconds=config.data.websocket_backoff_max_seconds))
+        while (now := now_ist()) < retry_at:
+            sleep(min(config.data.websocket_poll_seconds, (retry_at - now).total_seconds()))
+            yield ArchiveRecord(now_ist(), None)
+    if through_close:
+        through = session.closes_at + timedelta(seconds=config.paper_trial.broker_candle_max_age_seconds)
+        while (now := now_ist()) < through:
+            sleep(min(config.data.websocket_poll_seconds, (through - now).total_seconds()))
+            yield ArchiveRecord(now_ist(), None)
+
+
+def _write_report(path, report):
+    with atomic_path(path) as temporary:
+        temporary.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _history_error(report, phase, exc):
+    report["history_errors"].append(str(exc))
+    report["history_error_events"].append({"at_ist": now_ist().isoformat(), "phase": phase, "error": str(exc)})
+
+
+def _final_reference(config, fetch, start, end, report):
+    delay = config.data.history_backoff_seconds
+    for attempt in range(config.data.history_attempts):
+        try:
+            return fetch(start, end)
+        except (RequestError, HistoryError) as exc:
+            _history_error(report, "post-close reference", exc)
+            if attempt + 1 == config.data.history_attempts or isinstance(exc, RequestError) and not exc.retryable:
+                raise
+            sleep(delay)
+            delay = min(delay * 2, config.data.history_backoff_max_seconds)
+
+
 def _observe(config, session, future, spot_contract, options, headers, fetch, root, executor, strategies,
-             indicators, previous, warm_end, report):
+             indicators, previous, warm_end, report, *, through_close):
     cfg = config.paper_trial
     confirmations = BrokerCandleConfirmations(warm_end, cfg.finalize_delay_seconds)
     subscriptions = {NSE_CASH: [spot_contract.token], NSE_DERIVATIVES: [future.token, *options]}
@@ -113,32 +165,31 @@ def _observe(config, session, future, spot_contract, options, headers, fetch, ro
     spot_tick = opening_spot = connection = observe_from = observe_until = pipeline = pending = None
     decisions, accepted, shadow = [], [], []
     next_poll = session.opens_at
+    next_checkpoint = session.opens_at
     status = "connecting"
-    notices, failures = [], []
-    report.update(feed_notices=notices, history_errors=failures, decisions=decisions)
+    notices = []
+    report.update(feed_notices=notices, decisions=decisions)
     wait_for_final = timedelta(seconds=cfg.broker_candle_max_age_seconds)
 
     with TickArchive(root / "ticks", session.day, config.data.archive_batch_rows, config.data.archive_flush_seconds) as archive:
         with ThreadPoolExecutor(max_workers=1) as worker, closing(
-            MarketFeed(config.data).stream(headers, subscriptions, (NSE_DERIVATIVES, future.token), session)
+            _trial_events(config, session, headers, subscriptions, (NSE_DERIVATIVES, future.token), through_close=through_close)
         ) as events:
             for event in events:
                 if isinstance(event, FeedNotice):
                     notices.append({"state": event.kind, "at_ist": event.at.isoformat()})
                     status = "connected" if event.kind == "recovered" else event.kind
-                    if event.kind == "unavailable":
+                    if event.kind == "unavailable" and not through_close:
                         break
-                    if event.kind in {"stale", "reconnecting", "connected"}:
+                    if event.kind in {"stale", "reconnecting", "connected", "unavailable"}:
                         quotes.clear()
                         spot_tick = None
                     if event.kind == "connected":
                         if connection is None:
                             connection = event.at
-                            observe_from = minute_floor(connection) + MINUTE
-                            last_confirmable = minute_floor(session.closes_at - wait_for_final)
-                            observe_until = min(observe_from + cfg.duration_minutes * MINUTE, last_confirmable)
-                            if observe_until <= observe_from:
-                                raise FeedError("The session is too close to ending for a confirmed candle trial.")
+                            observe_from, observe_until = trial_window(
+                                session, connection, cfg.duration_minutes, wait_for_final, through_close=through_close,
+                            )
                             pipeline = CandlePipeline(session, future.token, config.data, started_at=event.at)
                             report.update(window_start_ist=observe_from.isoformat(), window_end_ist=observe_until.isoformat())
                             print(f"Trial window {observe_from:%H:%M} to {observe_until:%H:%M} IST", flush=True)
@@ -147,6 +198,8 @@ def _observe(config, session, future, spot_contract, options, headers, fetch, ro
                             event = ArchiveRecord(event.at, None, discontinuity=True)
                     else:
                         continue
+                if pipeline is None:
+                    continue
                 archive.append(event)
                 shadow.extend(pipeline.step(event))
                 if event.raw is not None:
@@ -163,24 +216,30 @@ def _observe(config, session, future, spot_contract, options, headers, fetch, ro
                             two_sided[tick.token] += 1
 
                 now = now_ist()
+                if now >= next_checkpoint:
+                    report.update(heartbeat_at_ist=now.isoformat(), finalized_minutes=len(accepted),
+                                  captured_quote_ticks=sum(counts.values()), outcome_counts=dict(routes))
+                    _write_report(root / "report.json", report)
+                    next_checkpoint = now + MINUTE
                 if pending is not None and pending[1].done():
                     requested_at, request = pending
                     pending = None
                     try:
                         rows = request.result()
                     except (RequestError, HistoryError) as exc:
-                        failures.append(str(exc))
+                        _history_error(report, "candle confirmation", exc)
                         rows = ()
+                        next_poll = max(next_poll, now + timedelta(seconds=config.data.history_backoff_max_seconds))
                     for candle in confirmations.accept(rows, requested_at):
                         if candle.at < observe_from:
                             strategies.history.append(AnalyzedBar(candle, indicators.update(candle), "history"))
                             continue
                         accepted.append(candle)
                         row = AnalyzedBar(candle, indicators.update(candle), "broker")
-                        live_spot = spot_tick.price if status == "connected" and spot_tick is not None and (
+                        live_spot = spot_tick.price if status == "connected" and now < session.closes_at and spot_tick is not None and (
                             0 <= (now - spot_tick.exchange_at).total_seconds() < config.options.quote_max_age_seconds
                         ) else None
-                        book = quotes if status == "connected" else {}
+                        book = quotes if status == "connected" and now < session.closes_at else {}
                         fresh_books = sum(executor.venue.fresh_book(quote, token, options[token].price_tick, now)
                                           for token, quote in book.items())
                         decision, result = strategies.on_closed_candle(
@@ -206,10 +265,13 @@ def _observe(config, session, future, spot_contract, options, headers, fetch, ro
                   late_ticks=pipeline.late_dropped if pipeline is not None else None)
     if observe_from is None or observe_from >= observe_until:
         raise FeedError("No complete market minute was available in the trial window.")
+    report.update(observed_through_ist=pipeline.last_at.isoformat(),
+                  history_only_minutes_before_live=(observe_from - session.opens_at) // MINUTE,
+                  full_live_window=observe_from == session.opens_at and observe_until == session.closes_at)
     available_until = min(observe_until, minute_floor(now_ist() - confirmations.delay))
     if available_until <= observe_from:
         raise FeedError("The completed sample contains no broker comparison window.")
-    reference = fetch(observe_from, available_until)
+    reference = _final_reference(config, fetch, observe_from, available_until, report)
     report["comparison"] = compare_trial_candles(shadow, reference, observe_from, available_until,
                                                  lot_size=future.lot_size, price_tick=future.price_tick)
     accepted_by_at = {row.at: row for row in accepted}
@@ -219,7 +281,7 @@ def _observe(config, session, future, spot_contract, options, headers, fetch, ro
                                             if (stamp := observe_from + index * MINUTE) not in accepted_by_at]
 
 
-def run_real_paper_trial(config: Config, directory: Path, calendar: Path) -> dict:
+def run_real_paper_trial(config: Config, directory: Path, calendar: Path, *, through_close=False, session_date=None) -> dict:
     if config.runtime.mode != "paper" or config.runtime.live_enabled or (
         config.risk.capital_inr is not None or config.risk.risk_per_trade_pct is not None
     ):
@@ -230,17 +292,27 @@ def run_real_paper_trial(config: Config, directory: Path, calendar: Path) -> dic
     except (KeyError, TypeError, ValueError):
         raise ValueError("The trial calendar needs a trading_sessions array of ISO dates.") from None
     now = now_ist()
-    if sessions != tuple(sorted(set(sessions))) or now.date() not in sessions or sessions.index(now.date()) == 0:
-        raise ValueError("The trial needs an ordered exchange calendar including today and the prior session.")
-    session = TradingSession.from_config(now.date(), config.market)
-    if not session.opens_at <= now < session.closes_at:
+    day = session_date or now.date()
+    if sessions != tuple(sorted(set(sessions))) or day not in sessions or sessions.index(day) == 0:
+        raise ValueError("The trial needs an ordered exchange calendar including its date and the prior session.")
+    session = TradingSession.from_config(day, config.market)
+    earliest = session.opens_at - timedelta(minutes=config.data.capture_lead_minutes) if through_close else session.opens_at
+    if through_close and session_date and now < earliest:
+        print(f"Waiting to connect at {earliest:%Y-%m-%d %H:%M} IST", flush=True)
+        while (now := now_ist()) < earliest:
+            sleep(min(MINUTE.total_seconds(), (earliest - now).total_seconds()))
+    if not earliest <= now < session.closes_at:
         raise ValueError("The trial needs an open market session.")
     root = directory / config.paper_trial.output_directory / f"{now:%Y%m%d-%H%M%S}-{uuid4().hex[:8]}"
     root.mkdir(parents=True)
     path = root / "report.json"
-    report = {"mode": "PAPER", "risk_configured": False, "strategy": config.runtime.strategy,
+    report = {"mode": "PAPER", "risk_configured": False, "strategy": config.runtime.strategy, "status": "running",
+              "requested_through_close": through_close, "session_date": day.isoformat(),
+              "history_errors": [], "history_error_events": [],
               "started_at_ist": now.isoformat(), "calendar_source": document.get("source"), "report_path": str(path),
               "signal_source": "two matching post-close SmartAPI historical reads", "fill_quotes": "SmartAPI WebSocket"}
+    _write_report(path, report)
+    print(f"Trial report {path}", flush=True)
     journal = Journal(root / "journal.sqlite3", config.costs)
     executor = PaperExecutor(journal, PaperVenue(root / "venue.sqlite3", config), config)
     try:
@@ -257,7 +329,18 @@ def run_real_paper_trial(config: Config, directory: Path, calendar: Path) -> dic
         def fetch(begin, end):
             return parse_minutes(request(begin, end), begin, end)
 
-        previous, current, warm_end = _warmup(config, fetch, session, sessions)
+        cache = HistoryCache(config.data, directory)
+
+        def warm_history(begin, end):
+            def read():
+                try:
+                    return request(begin, end)
+                except RequestError as exc:
+                    _history_error(report, "warmup", exc)
+                    raise
+            return cache.get(future.token, begin, end, read)
+
+        previous, current, warm_end = _warmup(config, warm_history, session, sessions)
         expiry, options = _option_window(config, master, sessions, session.day, (current or previous)[-1].close)
         report.update(weekly_expiry=expiry.isoformat(), subscribed_options=len(options), broker_seed_minutes=len(current))
         indicators = IndicatorEngine(config.data.rsi_period, config.data.atr_period)
@@ -267,13 +350,12 @@ def run_real_paper_trial(config: Config, directory: Path, calendar: Path) -> dic
                                         StrategyB(config, master, sessions))
         strategies.history.extend(AnalyzedBar(row, indicators.update(row), "history") for row in current)
         _observe(config, session, future, master.spot, options, headers, fetch, root, executor, strategies,
-                 indicators, previous, warm_end, report)
+                 indicators, previous, warm_end, report, through_close=through_close)
     except (LoginError, RequestError, FeedError, ValueError, OSError, DatabaseError) as exc:
         report["error"] = str(exc)
     finally:
         ledger = journal.snapshot()
-        report.update(finished_at_ist=now_ist().isoformat(), paper_orders=len(ledger.orders),
+        report.update(status="failed" if report.get("error") else "finished", finished_at_ist=now_ist().isoformat(), paper_orders=len(ledger.orders),
                       open_positions=len(ledger.positions), daily_report=build_report(journal.path, session.day))
-        with atomic_path(path) as temporary:
-            temporary.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_report(path, report)
     return report
