@@ -164,7 +164,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     value["broker"] = link(self.clock())
                 history = getattr(self.movers, "backtest_history", None)
                 self._json(200, value | {"stop_token": self.stop_token, "movers": movers, "activity": recent(),
-                                         "backtests": history() if history else []})
+                                         "backtests": history() if history else [],
+                                         "option_chain": getattr(self.movers, "option_chain", None)})
         else:
             self._json(404, {"error": "Page not found."})
 

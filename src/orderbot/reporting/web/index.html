@@ -115,6 +115,19 @@
 
     <div class="page" data-page="options" hidden>
       <div class="title-row"><h1>NIFTY options · call and put</h1><p id="session">NIFTY</p></div>
+      <div class="periods quad">
+        <section class="panel tile"><h2>NIFTY</h2><b id="chain-spot">—</b><span id="chain-spot-note">&nbsp;</span></section>
+        <section class="panel tile"><h2>Nearest expiry</h2><b id="chain-expiry">—</b><span id="chain-lot">&nbsp;</span></section>
+        <section class="panel tile"><h2>At-the-money call + put</h2><b id="chain-straddle">—</b><span id="chain-straddle-note">&nbsp;</span></section>
+        <section class="panel tile"><h2>Put / call open interest</h2><b id="chain-pcr">—</b><span>Across the strikes shown</span></section>
+      </div>
+      <section class="panel" aria-labelledby="chain-title">
+        <div class="section-heading"><h2 id="chain-title">Calls and puts around the money</h2><p id="chain-status">Waiting for prices</p></div>
+        <div class="table-scroll"><table class="chain"><thead><tr><th scope="col" class="right">Call open interest</th><th scope="col" class="right">Call change</th><th scope="col" class="right">Call price</th><th scope="col" class="right">Strike</th><th scope="col" class="right">Put price</th><th scope="col" class="right">Put change</th><th scope="col" class="right">Put open interest</th></tr></thead><tbody id="chain"></tbody></table></div>
+        <p class="muted footnote">Live prices for viewing, refreshed with each minute scan. The paper engine below does not trade from this table.</p>
+      </section>
+      <h2 class="spaced">Paper engine</h2>
+      <p class="muted">These panels fill only when an options paper run writes to the journal. No such run is part of the dashboard yet.</p>
       <div class="kpis">
         <section class="panel net" aria-labelledby="net-title">
           <h2 id="net-title">Realised net P&amp;L · paper</h2>

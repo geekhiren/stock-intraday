@@ -29,6 +29,7 @@ TOP = 8
 HISTORY_SPAN_DAYS = 28  # one SmartAPI minute-history request; also covers the 14 sessions the baselines need
 BACKTEST_LOOKBACK_DAYS = HISTORY_SPAN_DAYS  # earlier candles that supply the previous close and the baselines
 BACKTEST_HISTORY = 20  # past runs kept for comparison
+CHAIN_WINGS = 6  # strikes shown on each side of the at-the-money strike
 LOGIN_ATTEMPTS = 3  # stop before repeated bad logins can lock the broker account
 
 
@@ -90,6 +91,7 @@ class MoversScanner:
         self._login_failures = 0
         self._baselines_for = None
         self.paused = False  # set by the dashboard's Disconnect, or after repeated login failures
+        self._master, self.option_chain = None, None
         self._wake, self._force = Event(), False
 
     def __call__(self) -> dict:
@@ -98,7 +100,7 @@ class MoversScanner:
     def scan_once(self) -> None:
         now = self.clock()
         if self._day != now.date():
-            load_master(self.config.data, self.config.market.underlying, now.date(), self.directory)
+            self._master = load_master(self.config.data, self.config.market.underlying, now.date(), self.directory)
             cache = self.directory / self.config.data.instrument_cache_dir / f"instruments-{now.date().isoformat()}.json"
             self._universe = stock_universe(json.loads(cache.read_text(encoding="utf-8")))
             self._day = now.date()
@@ -117,6 +119,11 @@ class MoversScanner:
         self.snapshot = rank_movers(quotes, self._universe, at)
         record("Stock scan", f"Scanned {self.snapshot['quoted']} stocks · {self.snapshot['advancers']} up, "
                              f"{self.snapshot['decliners']} down")
+        try:
+            self.option_chain = self._option_chain(at)
+        except (RequestError, KeyError, IndexError, TypeError, ValueError):
+            if self.option_chain:  # keep showing the last prices, marked as old
+                self.option_chain = self.option_chain | {"stale": True}
         if self.trader is not None:
             before = self.trader.status
             self.trader.on_scan(quotes, self._universe, at)
@@ -160,6 +167,34 @@ class MoversScanner:
             record("14-day history", f"Ready · figures for {len(found)} of {len(universe)} stocks")
         self.trader.set_baselines(day, {symbol: (Decimal(atr), Decimal(volume)) for symbol, (atr, volume) in found.items()}, watchlist)
         record("Watchlist", "Today: " + ", ".join(row["symbol"] for row in watchlist) if watchlist else "No watchlist today")
+
+    def _option_chain(self, at: datetime) -> dict:
+        """NIFTY spot and the nearest expiry's calls and puts around the money, for viewing only."""
+        master, step = self._master, float(self.config.options.strike_interval)
+        index = self.client.quotes(self._credentials, self._session, master.spot.exchange, [master.spot.token])[0]
+        spot = float(index["ltp"])
+        expiry = min(option.expiry for option in master.options if option.expiry >= as_ist(at).date())
+        atm = round(spot / step) * step
+        wanted = {option.token: option for option in master.options
+                  if option.expiry == expiry and abs(float(option.strike) - atm) <= CHAIN_WINGS * step}
+        quotes = {quote["symbolToken"]: quote for quote in self.client.quotes(self._credentials, self._session, "NFO", sorted(wanted))}
+        rows: dict[float, dict] = {}
+        for token, option in wanted.items():
+            if token in quotes:
+                quote = quotes[token]
+                rows.setdefault(float(option.strike), {})[option.right] = {
+                    "price": float(quote["ltp"]), "pct": float(quote["percentChange"]),
+                    "open_interest": int(quote["opnInterest"]), "volume": int(quote["tradeVolume"])}
+        strikes = [{"strike": strike, "call": rows[strike].get("CE"), "put": rows[strike].get("PE")} for strike in sorted(rows)]
+        calls = sum(row["call"]["open_interest"] for row in strikes if row["call"])
+        puts = sum(row["put"]["open_interest"] for row in strikes if row["put"])
+        money = rows.get(atm, {})
+        return {
+            "at": as_ist(at).isoformat(), "spot": spot, "spot_pct": float(index["percentChange"]), "expiry": expiry.isoformat(),
+            "atm": atm, "lot_size": next(iter(wanted.values())).lot_size if wanted else None, "strikes": strikes,
+            "straddle": money["CE"]["price"] + money["PE"]["price"] if "CE" in money and "PE" in money else None,
+            "put_call_ratio": round(puts / calls, 2) if calls else None, "stale": False,
+        }
 
     def trade_chart(self, trade_id: int) -> dict:
         """Minute closes of the session of one paper trade, with its entry, stop, target and exit."""

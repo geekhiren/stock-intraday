@@ -668,6 +668,28 @@ function renderJobs(events) {
     3, 'Nothing logged yet.');
 }
 
+function renderChain(chain) {
+  const percent = (value) => `${value > 0 ? '+' : value < 0 ? '−' : ''}${Math.abs(value).toFixed(2)}%`;
+  byId('chain-spot').textContent = chain ? indian.format(chain.spot) : '—';
+  byId('chain-spot-note').textContent = chain ? `${percent(chain.spot_pct)} today` : 'Waiting for the first scan';
+  byId('chain-spot-note').className = chain ? tone(chain.spot_pct) : '';
+  byId('chain-expiry').textContent = chain ? ukDate(chain.expiry) : '—';
+  byId('chain-lot').textContent = chain && chain.lot_size ? `Lot size ${chain.lot_size}` : ' ';
+  byId('chain-straddle').textContent = chain && chain.straddle !== null ? price(chain.straddle) : '—';
+  byId('chain-straddle-note').textContent = chain ? `Strike ${indian.format(chain.atm)}` : ' ';
+  byId('chain-pcr').textContent = chain && chain.put_call_ratio !== null ? chain.put_call_ratio.toFixed(2) : '—';
+  byId('chain-status').textContent = !chain ? 'Waiting for prices' : `${chain.stale ? 'Old prices from' : 'Updated'} ${localTime(chain.at)} IST`;
+  const side = (leg, key) => (leg ? [key === 'price' ? price(leg.price) : key === 'pct' ? percent(leg.pct) : indian.format(leg.open_interest),
+    `right ${key === 'pct' ? tone(leg.pct) : ''}`] : ['—', 'right']);
+  renderTable('chain', (chain ? chain.strikes : []).map((row) => [
+    side(row.call, 'open_interest'), side(row.call, 'pct'), side(row.call, 'price'), [indian.format(row.strike), 'right'],
+    side(row.put, 'price'), side(row.put, 'pct'), side(row.put, 'open_interest'),
+  ]), 7, 'Option prices appear after the first price scan.');
+  if (chain) {
+    for (const row of byId('chain').rows) row.classList.toggle('money', row.cells.length > 3 && row.cells[3].textContent === indian.format(chain.atm));
+  }
+}
+
 // -- options ---------------------------------------------------------------------------------------
 function renderPositions(positions) {
   const items = positions.map((position) => {
@@ -711,6 +733,7 @@ function render(state) {
   renderJobs(state.activity || []);
   announceTrades(state.activity || []);
   renderBacktestHistory(state.backtests || []);
+  renderChain(state.option_chain);
   renderPositionCards(state.stocks ? state.stocks.open : [], state.now);
 
   byId('net').textContent = money(state.net_paise);
