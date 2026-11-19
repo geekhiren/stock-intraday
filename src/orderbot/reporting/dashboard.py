@@ -158,11 +158,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._json(503, {"error": "Journal snapshot unavailable."})
             else:
                 movers = self.movers() if self.movers else None
-                # With no option tick feed running, a fresh stock scan is the evidence that the broker is reachable.
-                if value["broker"]["state"] in {"disconnected", "stale"} and movers and movers.get("state") == "ok" and (
-                    0 <= (self.clock() - parse_timestamp(movers["at"])).total_seconds() < 180
-                ):
-                    value["broker"] = {"state": "connected", "observed_at": movers["at"]}
+                # With no option tick feed running, the stock scanner's own session is the broker link to show.
+                link = getattr(self.movers, "connection", None)
+                if link and value["broker"]["state"] in {"disconnected", "stale"}:
+                    value["broker"] = link(self.clock())
                 history = getattr(self.movers, "backtest_history", None)
                 self._json(200, value | {"stop_token": self.stop_token, "movers": movers, "activity": recent(),
                                          "backtests": history() if history else []})
@@ -210,6 +209,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._json(400, {"error": str(exc) if isinstance(exc, (ValueError, RequestError)) else "Malformed request."})
             except DatabaseError:
                 self._json(503, {"error": "The paper journal is unavailable."})
+        elif self.path == "/api/broker":
+            try:
+                action = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length", 0)), 256)))["action"]
+                getattr(self.movers, {"connect": "connect", "disconnect": "disconnect"}[action])()
+            except (ValueError, KeyError, TypeError, AttributeError) as exc:
+                self._json(400, {"error": str(exc) if type(exc) is ValueError else "The broker link cannot be changed in this session."})
+            except DatabaseError:
+                self._json(503, {"error": "The paper journal is unavailable."})
+            else:
+                self._json(200, {"ok": True})
         elif self.path == "/api/resume":
             try:
                 resumed = ExitStore(self.db).resume(self.clock())

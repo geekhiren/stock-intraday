@@ -37,11 +37,11 @@ ol, ul { list-style: none; padding: 0; }
 /* work area */
 main { background: var(--bg); margin: 8px 8px 8px 0; border-radius: var(--r-lg); height: calc(100vh - 16px); overflow-y: auto; scrollbar-color: #E2D9D7 transparent; }
 .topbar { position: sticky; top: 0; z-index: 2; background: var(--bg); display: flex; align-items: center; justify-content: flex-end; gap: 14px; padding: 10px 28px; min-height: 54px; border-bottom: 1px solid var(--line); border-radius: var(--r-lg) var(--r-lg) 0 0; }
-.topbar time { color: var(--dim); font-size: 13px; }
-.broker { display: inline-flex; align-items: center; gap: 7px; margin-right: auto; font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 999px; background: var(--bad-soft); color: var(--bad); }
+.topbar time { color: var(--dim); font-size: 13px; margin-left: auto; }
+.broker { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 999px; background: var(--bad-soft); color: var(--bad); }
 .broker::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 .broker[data-state="simulated"], .broker[data-state="connected"] { background: var(--good-soft); color: var(--good); }
-.broker[data-state="connecting"], .broker[data-state="stale"], .broker[data-state="reconnecting"] { background: var(--brand-soft); color: var(--brand-deep); }
+.broker[data-state="connecting"], .broker[data-state="stale"], .broker[data-state="reconnecting"], .broker[data-state="paused"] { background: var(--brand-soft); color: var(--brand-deep); }
 .content { padding: 28px 32px 72px; max-width: 1280px; margin: 0 auto; display: grid; gap: 16px; }
 .page { display: grid; gap: 16px; min-width: 0; }
 .page > *, .content > * { min-width: 0; }  /* let wide tables scroll inside their card instead of stretching the page */

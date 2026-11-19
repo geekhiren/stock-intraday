@@ -89,6 +89,8 @@ class MoversScanner:
         self._day = self._universe = self._credentials = self._session = None
         self._login_failures = 0
         self._baselines_for = None
+        self.paused = False  # set by the dashboard's Disconnect, or after repeated login failures
+        self._wake, self._force = Event(), False
 
     def __call__(self) -> dict:
         return self.snapshot
@@ -245,20 +247,49 @@ class MoversScanner:
         self.snapshot = self.snapshot | {"state": state, "message": message}
         record("Stock scan", message, error=True)
 
-    def run(self, stopped: Event) -> None:
+    def _market_open(self, now: datetime) -> bool:
         market = self.config.market
+        return now.weekday() < 5 and market.session_open <= now.time() <= market.session_close
+
+    def connection(self, at: datetime) -> dict:
+        """The broker link as the dashboard shows it."""
+        state = ("paused" if self.paused else "connecting" if self.snapshot.get("state") == "starting" else
+                 "connected" if self._session is not None else "disconnected")
+        seen = self.snapshot.get("at")
+        if state == "connected" and self._market_open(at) and seen and (as_ist(at) - datetime.fromisoformat(seen)).total_seconds() > 180:
+            state = "stale"
+        return {"state": state, "observed_at": seen, "market_open": self._market_open(at), "controllable": True,
+                "message": self.snapshot.get("message") if state in {"paused", "disconnected"} else None}
+
+    def disconnect(self) -> None:
+        """Stop talking to the broker until `connect`. Refused while a paper position needs prices to exit."""
+        if self.trader is not None and self.trader.held():
+            raise ValueError("Close the open paper position first. It needs live prices to reach its stop or target.")
+        self.paused, self._session = True, None
+        self.snapshot = self.snapshot | {"state": "paused", "message": "Disconnected from the dashboard."}
+        record("Broker", "Disconnected from the dashboard")
+
+    def connect(self) -> None:
+        """Log in again and scan once straight away, even outside market hours."""
+        self.paused, self._login_failures, self._force = False, 0, True
+        self.snapshot = {key: value for key, value in self.snapshot.items() if key != "message"} | {"state": "starting"}
+        record("Broker", "Connecting from the dashboard")
+        self._wake.set()
+
+    def run(self, stopped: Event) -> None:
         while not stopped.is_set():
             now = self.clock()
-            in_session = now.weekday() < 5 and market.session_open <= now.time() <= market.session_close
-            if in_session or "at" not in self.snapshot:
+            forced, self._force = self._force, False
+            if not self.paused and (self._market_open(now) or "at" not in self.snapshot or forced):
                 try:
                     self.scan_once()
                 except LoginError as exc:
                     self._login_failures += 1
                     if self._login_failures >= LOGIN_ATTEMPTS:
-                        self._fail("stopped", f"{exc} Restart the dashboard after fixing the login.")
-                        return
-                    self._fail("error", str(exc))
+                        self.paused = True  # stop before repeated bad logins can lock the broker account
+                        self._fail("stopped", f"{exc} Fix the login, then press Connect.")
+                    else:
+                        self._fail("error", str(exc))
                 except RequestError as exc:
                     self._fail("error", str(exc))
                 except sqlite3.Error:
@@ -266,7 +297,10 @@ class MoversScanner:
                 except (OSError, ValueError):
                     self._fail("error", "Instrument list unavailable.")
             deadline = monotonic() + SCAN_SECONDS
-            while monotonic() < deadline and not stopped.wait(WATCH_SECONDS):
+            while monotonic() < deadline and not stopped.is_set():
+                if self._wake.wait(WATCH_SECONDS):  # Connect was pressed: scan now
+                    self._wake.clear()
+                    break
                 self._watch_positions()
 
     def _watch_positions(self) -> None:
@@ -291,3 +325,4 @@ def movers_worker(config, directory: Path, db: Path):
         yield scanner
     finally:
         stopped.set()
+        scanner._wake.set()

@@ -12,6 +12,7 @@ const gateStates = { pass: 'Pass', fail: 'Fail', disabled: 'Disabled', not_evalu
 const brokerStates = {
   simulated: 'Simulated feed', connected: 'Broker connected', connecting: 'Broker connecting',
   disconnected: 'Broker disconnected', stale: 'Broker feed stale', reconnecting: 'Broker reconnecting',
+  paused: 'Broker disconnected by you',
 };
 const strategies = { sip: 'Stocks in play', orb: 'Opening range', vwap: 'VWAP crossover', manual: 'Manual', all: 'All trades' };
 const setups = { holding_highs: 'Holding highs', holding_lows: 'Holding lows' };
@@ -695,9 +696,14 @@ function render(state) {
   byId('mode').dataset.mode = state.mode;
   byId('clock').dateTime = state.now;
   byId('clock').textContent = `${localTime(state.now)} IST`;
-  byId('broker').textContent = brokerStates[state.broker.state] || label(state.broker.state);
+  byId('broker').textContent = (brokerStates[state.broker.state] || label(state.broker.state)) +
+    (state.broker.state === 'connected' && state.broker.market_open === false ? ' · market closed' : '');
+  const toggle = byId('broker-toggle');
+  toggle.hidden = !state.broker.controllable;
+  toggle.dataset.action = ['paused', 'disconnected'].includes(state.broker.state) ? 'connect' : 'disconnect';
+  toggle.textContent = toggle.dataset.action === 'connect' ? 'Connect' : 'Disconnect';
   byId('broker').dataset.state = state.broker.state;
-  byId('broker').title = state.broker.observed_at ? `Last update ${localTime(state.broker.observed_at)} IST` : '';
+  byId('broker').title = state.broker.message || (state.broker.observed_at ? `Last price scan ${localTime(state.broker.observed_at)} IST` : '');
   byId('session').textContent = `NIFTY · ${ukDate(state.now)}${state.fixture ? ' · Fixture replay' : ''}`;
   defaultBacktestDates(state.now);
   renderMovers(state.movers);
@@ -770,6 +776,19 @@ async function refresh() {
     }
   }
 }
+
+byId('broker-toggle').addEventListener('click', async (event) => {
+  const action = event.currentTarget.dataset.action;
+  if (action === 'disconnect' && !window.confirm('Disconnect from the broker? Price scans and paper trading stop until you press Connect.')) return;
+  actionError = '';
+  try {
+    await post('/api/broker', { action });
+  } catch (error) {
+    actionError = error.message;
+    showNotice(actionError);
+  }
+  await refresh();
+});
 
 byId('resume').addEventListener('click', async () => {
   if (!token || !window.confirm('Resume paper trading for today? New entries will be allowed again.')) return;

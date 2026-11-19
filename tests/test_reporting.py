@@ -228,3 +228,26 @@ def test_dashboard_stop_can_be_resumed_but_other_kill_switches_cannot(tmp_path):
     assert status_snapshot(CONFIG, db, at, fixture=True)["halt"] is None
     store.latch(at, "daily_loss_limit")
     assert store.resume(at) is False and not status_snapshot(CONFIG, db, at, fixture=True)["resumable"]
+
+
+def test_broker_link_can_be_disconnected_and_reconnected_from_the_dashboard(tmp_path):
+    from orderbot.broker.angel_client import Session
+    from orderbot.data.movers import MoversScanner
+    from orderbot.strategy.stock_paper import StockPaperTrader
+
+    db, at = seed(tmp_path)
+    trader = StockPaperTrader(CONFIG, db)
+    scanner = MoversScanner(CONFIG, tmp_path, client=Mock(), clock=lambda: at, trader=trader)
+    assert scanner.connection(at)["state"] == "connecting"
+    scanner._session, scanner.snapshot = Session("jwt", "refresh", "feed"), {"state": "ok", "at": at.isoformat()}
+    assert scanner.connection(at)["state"] == "connected" and scanner.connection(at + timedelta(minutes=5))["state"] == "stale"
+    scanner.disconnect()
+    assert scanner.paused and scanner._session is None and scanner.connection(at)["state"] == "paused"
+    scanner.connect()
+    assert not scanner.paused and scanner._wake.is_set() and scanner.connection(at)["state"] == "connecting"
+
+    with open_store(db) as connection:
+        connection.execute("""INSERT INTO stock_trades(session_day, token, symbol, strategy, side, quantity, entry_at_utc, entry_price, stop, target)
+            VALUES ('2026-11-30', '1', 'ALPHA', 'manual', 'long', 1, '2026-11-30T05:00:00.000000+00:00', '100', '99', '')""")
+    with pytest.raises(ValueError, match="Close the open paper position first"):
+        scanner.disconnect()
