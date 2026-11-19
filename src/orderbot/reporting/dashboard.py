@@ -70,7 +70,8 @@ def status_snapshot(config: Config, path: Path, at: datetime, *, fixture: bool) 
         gates, candle = {}, None
         row = connection.execute("""
             SELECT detail_json FROM decisions
-            WHERE at_utc >= ? AND at_utc < ? AND json_type(detail_json, '$.gates') = 'object'
+            WHERE at_utc >= ? AND at_utc < ? AND strategy='vwap'
+              AND json_type(detail_json, '$.gates.closed_candle') = 'object'
             ORDER BY at_utc DESC, rowid DESC LIMIT 1
         """, (start, end)).fetchone()
         if row is not None:

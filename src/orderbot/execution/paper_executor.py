@@ -15,6 +15,7 @@ from orderbot.options.freeze_quantity import FreezeError, split_quantity
 from orderbot.options.liquidity_gate import OptionQuote
 from orderbot.options.strike_selector import StrikeDecision, revalidate_selection
 from orderbot.risk.risk_manager import EntryPlan, RiskManager, RiskState
+from orderbot.strategy.precedence import entry_precedence
 
 from .journal import Journal, JournalConflict, Ledger, Position
 from .lifecycle import LifecycleError, OrderIntent, OrderState
@@ -109,13 +110,16 @@ class PaperExecutor:
             at = self._now()
             if not self._ensure_reconciled(at):
                 return skip("reconciliation_required")
+            ledger = self.journal.snapshot()
+            blocked = entry_precedence(self.config, strategy, at, ledger.orders)
+            if blocked is not None:
+                return skip(blocked)
             if selection.outcome != "selected":
                 return skip("no_selected_strike")
             current = revalidate_selection(selection, quote, at=at, spot=spot, config=self.config.options)
             if current.outcome != "revalidated":
                 return skip("aborted_requote")
             candidate = current.candidates[0]
-            ledger = self.journal.snapshot()
             risk_state = self._risk_state(ledger, at)
             plan = EntryPlan(candidate.contract, candidate.mid, quote.asks[0].price, premium_stop, target_mid, target_bid)
             decision = self.risk.assess_entry(plan, risk_state)
@@ -225,7 +229,9 @@ class PaperExecutor:
                     continue
                 intent = report.intent
                 quote = quotes.get(intent.token)
-                if self._expired(intent, at):
+                if self._ohl_entry_ended(intent, at):
+                    current = self.venue.cancel(intent.tag, "ohl_entry_cutoff")
+                elif self._expired(intent, at):
                     current = self.venue.cancel(intent.tag, "unfilled_remainder_timeout")
                 elif quote is not None and quote.exchange_at > (report.last_fill_at or intent.at):
                     current = self.venue.match(intent.tag, quote, at)
@@ -236,6 +242,11 @@ class PaperExecutor:
 
     def _expired(self, intent: OrderIntent, at: datetime) -> bool:
         return (at - intent.at).total_seconds() >= self.config.execution.partial_timeout_seconds
+
+    def _ohl_entry_ended(self, intent: OrderIntent, at: datetime) -> bool:
+        return intent.side == "BUY" and intent.strategy == "ohl" and (
+            at.date() != intent.at.date() or at.time() >= self.config.strategy_b.entry_window_end
+        )
 
     def _intents(self, decision_id, strategy, contract, side, children, limit, at, stop, reason):
         return tuple(
@@ -254,6 +265,7 @@ class PaperExecutor:
             at = self._now()
             if (
                 at.date() != intent.at.date() or self._expired(intent, at)
+                or self._ohl_entry_ended(intent, at)
                 or not self.venue.fresh_book(quote, intent.token, intent.price_tick, at, side=intent.side)
             ):
                 self.journal.sync((), at, cancel_unsent=tags[index:])

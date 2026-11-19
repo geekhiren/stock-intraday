@@ -105,6 +105,13 @@ strategy_a:
   k_sl: "2"
   k_tgt: "4"
   max_premium_loss_fraction: "0.35"
+strategy_b:
+  ohl_buffer_pct: "0.0006"
+  range_minutes: 15
+  entry_window_end: "10:00"
+  breakout_buffer_pct: "0.0005"
+  ohl_target_r: "1.5"
+  require_gap_agreement: true
 exits:
   square_off_time: "15:10"
   backstop_time: "15:20"

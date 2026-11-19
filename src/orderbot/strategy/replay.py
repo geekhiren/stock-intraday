@@ -93,7 +93,7 @@ def load_strategy_fixture(path: Path, config: Config) -> StrategyFixture:
 
 def replay_strategy_a(path: Path, config: Config) -> dict:
     fixture = load_strategy_fixture(path, config)
-    cfg = fixture.config
+    cfg = fixture.config.model_copy(update={"runtime": fixture.config.runtime.model_copy(update={"strategy": "vwap"})})
     at = fixture.session.opens_at
     identifiers = count()
     contracts = {item.token: item for item in fixture.master.options}

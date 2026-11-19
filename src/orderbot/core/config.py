@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import time
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Literal
@@ -8,6 +8,8 @@ from typing import Annotated, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, StringConstraints, ValidationError, model_validator
 from yaml.constructor import ConstructorError
+
+from .ist_time import IST
 
 
 class ConfigError(ValueError):
@@ -211,6 +213,21 @@ class StrategyAConfig(Section):
         return self
 
 
+class StrategyBConfig(Section):
+    ohl_buffer_pct: TurnoverRate
+    range_minutes: PositiveCount
+    entry_window_end: time
+    breakout_buffer_pct: TurnoverRate
+    ohl_target_r: PositiveDecimal
+    require_gap_agreement: Annotated[bool, Field(strict=True)]
+
+    @model_validator(mode="after")
+    def check_entry_window(self):
+        if any((self.entry_window_end.tzinfo, self.entry_window_end.second, self.entry_window_end.microsecond)):
+            raise ValueError("Strategy B entry cutoff must be an IST minute boundary.")
+        return self
+
+
 class ExitConfig(Section):
     square_off_time: time
     backstop_time: time
@@ -324,6 +341,7 @@ class Config(Section):
     costs: CostConfig
     execution: ExecutionConfig
     strategy_a: StrategyAConfig
+    strategy_b: StrategyBConfig
     exits: ExitConfig
     kill_switch: KillSwitchConfig
     reporting: ReportingConfig
@@ -338,6 +356,14 @@ class Config(Section):
             raise ValueError("Square-off and its backstop must occur within the trading session.")
         if self.reporting.daily_report_time <= self.market.session_close:
             raise ValueError("The daily report must be scheduled after the trading session.")
+        session_day = date.min
+        opening = datetime.combine(session_day, self.market.session_open, tzinfo=IST)
+        cutoff = datetime.combine(session_day, self.strategy_b.entry_window_end, tzinfo=IST)
+        first_breakout_close = timedelta(minutes=self.strategy_b.range_minutes + 1, seconds=self.data.close_grace_seconds)
+        if cutoff - opening <= first_breakout_close or not (
+            self.strategy_b.entry_window_end < min(self.exits.square_off_time, self.strategy_a.expiry_entry_close)
+        ):
+            raise ValueError("Strategy B needs an entry window after the range freezes and before other entry cutoffs.")
         return self
 
 

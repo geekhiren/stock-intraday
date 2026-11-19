@@ -25,6 +25,7 @@ from orderbot.reporting.daily_report import build_report, daily_report_worker, r
 from orderbot.reporting.dashboard import make_server
 from orderbot.reporting.fixtures import seed_surface_fixture
 from orderbot.strategy.replay import replay_strategy_a
+from orderbot.strategy.session_replay import replay_paper_session
 
 
 def run_surface(config, directory, args, db, *, fixture_clock=None) -> int:
@@ -63,6 +64,7 @@ def main() -> int:
     action.add_argument("--replay-options", type=Path, metavar="FIXTURE", help="Replay paper option selection decisions")
     action.add_argument("--replay-execution", type=Path, metavar="FIXTURE", help="Replay paper execution and restart")
     action.add_argument("--replay-strategy-a", type=Path, metavar="FIXTURE", help="Replay Strategy A against fixtures")
+    action.add_argument("--replay-paper-session", type=Path, metavar="FIXTURE", help="Run an end-to-end paper fixture session")
     action.add_argument("--replay-exits", type=Path, metavar="FIXTURE", help="Drill paper exits and kill switches")
     action.add_argument("--dashboard", action="store_true", help="Serve the local paper dashboard")
     action.add_argument("--report", type=date.fromisoformat, metavar="YYYY-MM-DD", help="Report an IST session")
@@ -71,6 +73,8 @@ def main() -> int:
     parser.add_argument("--option-token", action="append", default=[], help="Include a dated NIFTY option in capture")
     parser.add_argument("--surface-fixture", type=Path, metavar="FIXTURE", help="Use an isolated dashboard or report fixture")
     parser.add_argument("--report-format", choices=("json", "markdown"), help="Daily report format (default JSON)")
+    parser.add_argument("--fixture-funding", action="store_true", help="Use synthetic risk inputs only for the isolated replay")
+    parser.add_argument("--fixture-scenario", choices=("ohl_trade", "no_ohl_trade"), help="Select the fixture's opening gap")
     args = parser.parse_args()
     if args.option_token and not args.capture_data:
         parser.error("--option-token requires --capture-data")
@@ -78,6 +82,8 @@ def main() -> int:
         parser.error("--surface-fixture requires --dashboard or --report")
     if args.report_format and not args.report:
         parser.error("--report-format requires --report")
+    if (args.fixture_funding or args.fixture_scenario) and not args.replay_paper_session:
+        parser.error("--fixture-funding and --fixture-scenario require --replay-paper-session")
 
     try:
         config = load_config(args.config)
@@ -105,6 +111,13 @@ def main() -> int:
         if args.replay_strategy_a:
             print(json.dumps(replay_strategy_a(args.replay_strategy_a, config), sort_keys=True, indent=2))
             return 0
+        if args.replay_paper_session:
+            result = replay_paper_session(args.replay_paper_session, config, mode=args.strategy or config.runtime.strategy,
+                                          scenario=args.fixture_scenario or "ohl_trade", fixture_funding=args.fixture_funding)
+            print(json.dumps(result, sort_keys=True, indent=2))
+            if result["confirmed_flat"] and result["report"]["reconciliation"]["status"] == "reconciled":
+                return 0
+            return 1
         if args.replay_exits:
             print(json.dumps(replay_exits(args.replay_exits, config), sort_keys=True, indent=2))
             return 0

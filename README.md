@@ -117,3 +117,17 @@ The dashboard prints its loopback address at startup. The fixture creates indepe
 Run `python run.py --dashboard` to use the configured journal. The dashboard process writes the dated Markdown report at the configured time, 15:35 IST by default, and catches up for that IST day when started after the cutoff. `python run.py --report YYYY-MM-DD` reads the same journal on demand and returns JSON by default. A reconciliation mismatch or missing fill or charge evidence gives the report command exit status 1. The report totals booked charges and independently recomputes each trade's net P&L from cumulative fill values. Older fills that lack touch-price evidence remain eligible for P&L reconciliation and are counted separately in the slippage comparison.
 
 Alerts for entry, exit, kill-switch and reconciliation failures are durable in SQLite. To route them to Telegram, set `alerts.telegram_enabled` in `config.yaml` and provide `ORDERBOT_TELEGRAM_TOKEN` and `ORDERBOT_TELEGRAM_CHAT_ID` in the dashboard process environment. Message delivery and retries run in the background while the dashboard process is running. A delivery timeout may result in a repeat message. Fixture dashboard sessions always use the local outbox. [Telegram Bot API](https://core.telegram.org/bots/api#sendmessage)
+
+## Strategy B and end-to-end paper fixtures
+
+```powershell
+python run.py --replay-paper-session tests/fixtures/phase8_session.json --strategy ohl
+python run.py --replay-paper-session tests/fixtures/phase8_session.json --strategy ohl --fixture-funding
+python run.py --replay-paper-session tests/fixtures/phase8_session.json --strategy ohl --fixture-funding --fixture-scenario no_ohl_trade
+```
+
+Strategy B builds the opening range from closed NIFTY near-month futures candles and freezes it at 09:30 IST with the default settings. The open must be near a range edge and the previous futures close must confirm the gap direction. The first closed candle that clears the tagged breakout by one futures tick plus the configured buffer can enter through the same option selection, liquidity, and risk pipeline used by Strategy A. The stop uses the closer of the opposite range edge and the ATR distance, with a 1.5R target by default.
+
+`ohl` mode gives Strategy B the morning window. At 10:00 IST, working OHL buys are cancelled and Strategy A becomes eligible only if there was no OHL fill that session. The journal preserves this rule after restart, even when the OHL position is already closed. `vwap` mode runs Strategy A only.
+
+The replay writes synthetic Snap Quote packets to a temporary Parquet archive and drives both strategies from the replayed session. The funded runs use fixture-only capital and risk to exercise fills, exits, reconciliation, the net daily report, and queued alerts. The default unfunded run exercises the risk veto. These commands require no credentials or network access. Section 18 Phase 9 calls for 30 actual paper sessions, which are still pending.

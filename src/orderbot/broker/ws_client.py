@@ -23,6 +23,11 @@ from .instruments import NSE_CASH, NSE_DERIVATIVES
 
 SNAP_QUOTE = 3
 SNAP_BYTES = 379
+SNAP_HEADER = struct.Struct("<BB25sqqq")
+SNAP_VOLUME = struct.Struct("<q")
+SNAP_VOLUME_START = 67
+SNAP_TRADE_DATA = struct.Struct("<qq")
+SNAP_TRADE_DATA_START = 123
 BOOK_START = 147
 LEVEL = struct.Struct("<HqqH")
 LOGGER = logging.Logger("orderbot.smartapi.websocket")
@@ -68,9 +73,9 @@ def _epoch_ist(milliseconds: int) -> datetime:
 def decode_snap(raw: bytes) -> MarketTick:
     if len(raw) != SNAP_BYTES or raw[0] != SNAP_QUOTE:
         raise FeedError("Unexpected SmartAPI Snap Quote format.")
-    _, exchange, token_bytes, sequence, exchange_ms, price = struct.unpack_from("<BB25sqqq", raw)
-    volume = struct.unpack_from("<q", raw, 67)[0]
-    trade_ms, open_interest = struct.unpack_from("<qq", raw, 123)
+    _, exchange, token_bytes, sequence, exchange_ms, price = SNAP_HEADER.unpack_from(raw)
+    volume = SNAP_VOLUME.unpack_from(raw, SNAP_VOLUME_START)[0]
+    trade_ms, open_interest = SNAP_TRADE_DATA.unpack_from(raw, SNAP_TRADE_DATA_START)
     token = token_bytes.split(b"\0", 1)[0]
     if not token.isdigit() or exchange not in {NSE_CASH, NSE_DERIVATIVES}:
         raise FeedError("Unexpected Snap Quote token or exchange.")

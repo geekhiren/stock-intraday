@@ -1,8 +1,6 @@
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, time
 from decimal import Decimal
-from typing import Literal
 
 from orderbot.broker.instruments import InstrumentMaster
 from orderbot.core.config import Config, StrategyAConfig
@@ -12,55 +10,17 @@ from orderbot.data.candle_builder import MINUTE, TradingSession
 from orderbot.data.indicators import PivotLevels
 from orderbot.data.replay import AnalyzedBar
 from orderbot.options.liquidity_gate import OptionQuote
-from orderbot.options.strike_selector import StrikeDecision, select_strike
+from orderbot.options.strike_selector import select_strike
 
+from .base import GateResult, Signal, StrategyDecision
 from .iv_store import IVStore, nearest_rank
-from .stop_plan import Side, StopPlan, build_stop_plan
+from .stop_plan import Side, build_stop_plan
 
 
 GATES = (
     "closed_candle", "vwap_crossover", "consolidation", "volume_surge", "rsi",
     "pivot", "liquidity", "time_window", "iv",
 )
-
-
-@dataclass(frozen=True, slots=True)
-class GateResult:
-    status: Literal["pass", "fail", "disabled", "not_evaluated"]
-    detail: dict = field(default_factory=dict)
-
-
-@dataclass(frozen=True, slots=True)
-class Signal:
-    side: Side
-    right: Literal["CE", "PE"]
-    selection: StrikeDecision
-    stop_plan: StopPlan
-    target_bid: Decimal
-
-
-@dataclass(frozen=True, slots=True)
-class StrategyDecision:
-    id: str
-    candle_at: datetime
-    at: datetime
-    token: str
-    gates: dict[str, GateResult]
-    reason: str
-    signal: Signal | None = None
-
-    def view(self) -> dict:
-        record = {
-            "id": self.id, "candle_at": self.candle_at.isoformat(), "decision_at": self.at.isoformat(),
-            "future_token": self.token, "reason": self.reason,
-            "gates": {name: asdict(result) for name, result in self.gates.items()},
-        }
-        if self.signal is not None:
-            record.update(
-                side=self.signal.side, right=self.signal.right, option_token=self.signal.selection.selected_token,
-                stop_plan=self.signal.stop_plan.view(), target_bid=str(self.signal.target_bid),
-            )
-        return record
 
 
 class StrategyA:

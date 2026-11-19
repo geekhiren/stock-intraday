@@ -1,0 +1,54 @@
+{
+  "source": "Synthetic NIFTY futures and options session extending Phase 5",
+  "base_session": "phase5_session.json",
+  "opening_futures": [22265, 22265, 22245, 22250, 100],
+  "futures_overrides": {
+    "27": [22250, 22265, 22245, 22255, 100],
+    "28": [22255, 22270, 22250, 22260, 100],
+    "29": [22260, 22275, 22255, 22265, 100],
+    "30": [22265, 22275, 22255, 22260, 100],
+    "31": [22260, 22275, 22255, 22270, 100],
+    "55": [22115, 22120, 22105, 22110, 100],
+    "56": [22110, 22120, 22105, 22115, 100]
+  },
+  "opening_spot": "22150.00",
+  "previous_close": "22280.00",
+  "fallback_previous_close": "22240.00",
+  "option_events": [
+    {"at": "2026-11-30T09:36:02+05:30", "token": "4202", "last": "120.00", "bid": "119.95", "ask": "120.05"},
+    {"at": "2026-11-30T09:36:06+05:30", "token": "4202", "last": "120.00", "bid": "119.95", "ask": "120.05"},
+    {"at": "2026-11-30T09:36:10+05:30", "token": "4202", "last": "220.00", "bid": "219.95", "ask": "220.05"},
+    {"at": "2026-11-30T10:08:02+05:30", "token": "4202", "last": "120.00", "bid": "119.95", "ask": "120.05"},
+    {"at": "2026-11-30T10:08:06+05:30", "token": "4202", "last": "120.00", "bid": "119.95", "ask": "120.05"},
+    {"at": "2026-11-30T10:08:10+05:30", "token": "4202", "last": "70.00", "bid": "69.95", "ask": "70.05"}
+  ],
+  "book_quantity": 1300,
+  "option_open_interest": 20000,
+  "option_volume": 10000,
+  "expected": {
+    "closed_candles": 375,
+    "frozen_at": "2026-11-30T09:30:00+05:30",
+    "range_high": "22265.00",
+    "range_low": "22240.00",
+    "breakout_level": "22228.70",
+    "trade_side": "short",
+    "trade_strategy": "ohl",
+    "ohl_opened_at": "2026-11-30T09:36:02+05:30",
+    "ohl_closed_at": "2026-11-30T09:36:10+05:30",
+    "ohl_exit_reason": "premium_target",
+    "ohl_net_paise": 640884,
+    "ohl_charges_paise": 7816,
+    "fallback_strategy": "vwap",
+    "fallback_exit_reason": "premium_floor",
+    "fallback_net_paise": -332244,
+    "fallback_charges_paise": 5944
+  },
+  "unit": {
+    "short": {"entry": "22228.70", "range_opposite": "22265.00", "atr": "25", "stop": "22265.00", "target": "22174.25"},
+    "long": {"entry": "22276.30", "range_opposite": "22240.00", "atr": "10", "stop": "22256.30", "target": "22306.30"},
+    "option_entry": "120.10",
+    "delta": "0.52",
+    "short_premium_stop": "101.2240",
+    "short_premium_target": "148.4140"
+  }
+}
