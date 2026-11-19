@@ -1,5 +1,5 @@
 {
   "rate": 0.5,
-  "monotonic_readings": [100.0, 100.0, 100.25, 102.0],
+  "monotonic_readings": [100.0, 100.0, 100.25, 102.0, 102.0],
   "expected_sleep": 1.75
 }

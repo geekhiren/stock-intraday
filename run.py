@@ -10,7 +10,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from uuid import uuid4
 
-from orderbot.broker.angel_client import AngelClient, LoginError, read_credentials
+from orderbot.broker.angel_client import AngelClient, LoginError, RateLimitError, read_credentials
 from orderbot.broker.instruments import load_master
 from orderbot.core.activity import record
 from orderbot.core.config import ConfigError, load_config, validate_runtime_paths
@@ -185,19 +185,19 @@ def main() -> int:
                 )
                 if args.broker_login:
                     credentials = read_credentials(config.broker, env_file=directory / ".env")
-                    AngelClient(config.broker).login(credentials)
+                    AngelClient.for_workspace(config, directory).login(credentials)
                     logs.application.info("broker_login_succeeded", extra=context)
                 if args.capture_data:
                     count = capture_session(config, directory, logs.application, context["correlation_id"],
                                             args.option_token)
                     print(f"Paper data capture closed {count} new futures candles.")
                     return 0
-            except LoginError as exc:
+            except (LoginError, RateLimitError) as exc:
                 logs.application.error("broker_login_failed", extra={**context, "fields": {"reason": str(exc)}})
                 raise
         print("SmartAPI login succeeded (PAPER)." if args.broker_login else "Foundation ready (PAPER).")
         return 0
-    except (ValueError, LoginError, OSError, sqlite3.Error) as exc:
+    except (ValueError, LoginError, RateLimitError, OSError, sqlite3.Error) as exc:
         print(str(exc), file=sys.stderr)
         return 1
     except KeyboardInterrupt:

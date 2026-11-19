@@ -340,7 +340,7 @@ def test_capture_preserves_history_seed_for_mid_session_replay(tmp_path, monkeyp
     broker = Mock()
     broker.login.return_value = Session("test-jwt", "test-refresh", "test-feed")
     broker.historical_minutes.side_effect = [[], fixture("history")["data"]]
-    monkeypatch.setattr(capture, "AngelClient", lambda _: broker)
+    monkeypatch.setattr(capture.AngelClient, "for_workspace", lambda *_: broker)
 
     class FixtureFeed:
         def stream(self, headers, subscriptions, required, captured_session):

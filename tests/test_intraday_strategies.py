@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from orderbot.core.config import load_config
+from research.intraday_strategies import s6_gap_and_go
 from research.intraday_strategies.common import Plan, build_days, simulate, summary
 
 CONFIG = load_config(Path(__file__).resolve().parents[1] / "config.yaml")
@@ -28,3 +29,17 @@ def test_simulator_sizes_by_risk_fills_the_target_and_prefers_the_stop():
     wide = build_days(session("2026-11-30", [100.0] * 5) + [["2026-11-30T09:20:00+05:30", 100, 103, 98, 100, 1000]])[-1]
     stopped, = simulate([wide], lambda day: [Plan(4, 1, 99.05, target=102.05)], CONFIG, risk=500, slot=50000)
     assert (stopped["reason"], stopped["exit"]) == ("stop", 99.0) and summary([trade, stopped])["accuracy_pct"] == 50.0
+
+
+def test_missing_or_duplicate_minutes_cannot_complete_a_candle_or_opening_range():
+    _, *rows = session("2026-11-30", [100.0] * 15 + [100.6] * 5)
+    missing = SAFETY["missing_opening_minute_index"]
+    cases = ([rows[4]], rows[:missing] + rows[missing + 1:], rows[:missing] + [rows[0]] + rows[missing + 1:])
+    for batch in cases:
+        today, = build_days(batch)
+        assert all(bar.clock != "09:19" for bar in today.bars(5))
+        assert today.bars(15) == []
+        assert s6_gap_and_go._opening(today) is None
+    today, = build_days(rows)
+    opening = s6_gap_and_go._opening(today)
+    assert (opening.clock, opening.volume, opening.end) == ("09:29", 15000, 14)

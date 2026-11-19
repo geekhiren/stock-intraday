@@ -17,6 +17,8 @@ python -m pytest tests/test_intraday_strategies.py
 
 The tester in `common.py` enters at the signal candle's close plus one tick, checks later one-minute candles for the stop and target (the stop wins when a candle touches both), adds one tick of slippage on stops, closes everything by 15:10 and charges full Indian intraday costs. Sizing is the bot's: the rupee risk and position size from `config.yaml`, one position at a time.
 
+Set the stock paper capital and risk per trade to run a sized backtest. Five- and fifteen-minute candles require every constituent minute. Gap-and-go also requires complete opening ranges for the current day and its volume baseline.
+
 ## RELIANCE, 21/08/2026 to 18/11/2026 (61 sessions)
 
 Rs 500 risk per trade, at most Rs 50,000 per position.

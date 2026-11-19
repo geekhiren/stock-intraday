@@ -16,21 +16,22 @@ MIN_GAP_PCT, VOLUME_MULTIPLE, HISTORY = 1.0, 1.5, 10
 
 
 def _opening(day: Day):
-    return [bar for bar in day.minutes if bar.clock < "09:30"]
+    return next((bar for bar in day.bars(15) if bar.clock == "09:29"), None)
 
 
 def plans(day: Day) -> list[Plan]:
-    opening, earlier = _opening(day), day.earlier[-HISTORY:]
-    if day.previous_close is None or len(opening) < 10 or len(earlier) < HISTORY:
+    opening = _opening(day)
+    earlier = [_opening(item) for item in day.earlier[-HISTORY:]]
+    if day.previous_close is None or opening is None or len(earlier) < HISTORY or None in earlier:
         return []
-    gap = (opening[0].open / day.previous_close - 1) * 100
+    gap = (opening.open / day.previous_close - 1) * 100
     side = 1 if gap >= MIN_GAP_PCT else -1 if gap <= -MIN_GAP_PCT else 0
-    usual = average(sum(bar.volume for bar in _opening(item)) for item in earlier)
-    if not side or sum(bar.volume for bar in opening) < VOLUME_MULTIPLE * usual:
+    usual = average(bar.volume for bar in earlier)
+    if not side or opening.volume < VOLUME_MULTIPLE * usual:
         return []
-    high, low = max(bar.high for bar in opening), min(bar.low for bar in opening)
-    held = (low > day.previous_close and opening[-1].close >= opening[0].open) if side > 0 else \
-        (high < day.previous_close and opening[-1].close <= opening[0].open)
+    high, low = opening.high, opening.low
+    held = (low > day.previous_close and opening.close >= opening.open) if side > 0 else \
+        (high < day.previous_close and opening.close <= opening.open)
     if not held:
         return []
     for bar in day.bars(5):

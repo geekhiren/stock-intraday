@@ -4,14 +4,15 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+from functools import partial
 import json
 from pathlib import Path
 import sqlite3
-from threading import Event, Thread
+from threading import Event, RLock, Thread
 from time import monotonic, sleep
 
-from orderbot.broker.angel_client import AngelClient, LoginError, RequestError, read_credentials
-from orderbot.broker.history import HistoryCache, encode_minutes
+from orderbot.broker.angel_client import AngelClient, LoginError, RateLimitError, RequestError, read_credentials
+from orderbot.broker.history import HistoryCache, HistoryError, encode_minutes
 from orderbot.broker.instruments import load_master
 from orderbot.core.ist_time import IST, as_ist, now_ist
 from orderbot.data.candle_builder import minute_floor
@@ -20,7 +21,6 @@ from orderbot.core.activity import record
 from orderbot.core.atomic_file import atomic_path
 from orderbot.strategy.stock_paper import StockPaperTrader, baseline, daily_stats, watch_scores
 
-BATCH = 50  # SmartAPI quote limit per request
 SCAN_SECONDS = 60
 # ponytail: open positions are re-quoted over REST every few seconds. Move them to the tick feed (ws_client)
 # if stops need to react faster than this.
@@ -31,6 +31,10 @@ BACKTEST_LOOKBACK_DAYS = HISTORY_SPAN_DAYS  # earlier candles that supply the pr
 BACKTEST_HISTORY = 20  # past runs kept for comparison
 CHAIN_WINGS = 6  # strikes shown on each side of the at-the-money strike
 LOGIN_ATTEMPTS = 3  # stop before repeated bad logins can lock the broker account
+
+
+class _Disconnected(ValueError):
+    """The broker session changed while a scan or request was in progress."""
 
 
 def stock_universe(rows) -> dict[str, str]:
@@ -85,7 +89,7 @@ class MoversScanner:
     def __init__(self, config, directory: Path, *, client: AngelClient | None = None, clock=now_ist,
                  trader: StockPaperTrader | None = None):
         self.config, self.directory, self.clock, self.trader = config, directory, clock, trader
-        self.client = client or AngelClient(config.broker)
+        self.client = client or AngelClient.for_workspace(config, directory)
         self.snapshot = {"state": "starting"}
         self._day = self._universe = self._credentials = self._session = None
         self._login_failures = 0
@@ -93,44 +97,85 @@ class MoversScanner:
         self.paused = False  # set by the dashboard's Disconnect, or after repeated login failures
         self._master, self.option_chain = None, None
         self._wake, self._force = Event(), False
+        self._connection_lock, self._generation = RLock(), 0
 
     def __call__(self) -> dict:
         return self.snapshot
 
-    def scan_once(self) -> None:
-        now = self.clock()
+    def _check(self, generation: int) -> None:
+        with self._connection_lock:
+            if self.paused or generation != self._generation:
+                raise _Disconnected("The broker connection changed. Try again after the next stock scan.")
+
+    def _fetch(self, generation, method, *args):
+        with self._connection_lock:
+            self._check(generation)
+            credentials, session = self._credentials, self._session
+            if session is None:
+                raise _Disconnected("The broker session is not ready yet. Try again after the first stock scan.")
+        result = method(credentials, session, *args, check=partial(self._check, generation))
+        self._check(generation)
+        return result
+
+    def _quotes(self, generation, exchange, tokens):
+        size = self.config.broker.rest_quote_token_limit
+        return [quote for start in range(0, len(tokens), size) for quote in self._fetch(
+            generation, self.client.quotes, exchange, tokens[start:start + size])]
+
+    def scan_once(self, generation: int | None = None) -> None:
+        with self._connection_lock:
+            generation = self._generation if generation is None else generation
+            self._check(generation)
+            session = self._session
+        now = as_ist(self.clock())
         if self._day != now.date():
             self._master = load_master(self.config.data, self.config.market.underlying, now.date(), self.directory)
             cache = self.directory / self.config.data.instrument_cache_dir / f"instruments-{now.date().isoformat()}.json"
             self._universe = stock_universe(json.loads(cache.read_text(encoding="utf-8")))
             self._day = now.date()
-        if self._session is None:
-            self._credentials = read_credentials(self.config.broker, env_file=self.directory / ".env")
-            self._session = self.client.login(self._credentials)
-            self._login_failures = 0
+        if session is None:
+            credentials = read_credentials(self.config.broker, env_file=self.directory / ".env")
+            session = self.client.login(credentials, check=partial(self._check, generation))
+            with self._connection_lock:
+                self._check(generation)
+                self._credentials, self._session = credentials, session
+                self._login_failures = 0
         if self.trader is not None and self._baselines_for != now.date():
             self._baselines_for = now.date()
-            Thread(target=self._prepare_baselines, args=(now.date(), dict(self._universe)), name="orderbot-baselines",
+            Thread(target=self._prepare_baselines, args=(now.date(), dict(self._universe), generation), name="orderbot-baselines",
                    daemon=True).start()
-        tokens, quotes = sorted(self._universe), []
-        for start in range(0, len(tokens), BATCH):
-            quotes += self.client.quotes(self._credentials, self._session, "NSE", tokens[start:start + BATCH])
-        at = self.clock()
-        self.snapshot = rank_movers(quotes, self._universe, at)
-        record("Stock scan", f"Scanned {self.snapshot['quoted']} stocks · {self.snapshot['advancers']} up, "
-                             f"{self.snapshot['decliners']} down")
+        quotes = self._quotes(generation, "NSE", sorted(self._universe))
+        at = as_ist(self.clock())
+        with self._connection_lock:
+            self._check(generation)
+            self.snapshot = rank_movers(quotes, self._universe, at)
+            record("Stock scan", f"Scanned {self.snapshot['quoted']} stocks · {self.snapshot['advancers']} up, "
+                                 f"{self.snapshot['decliners']} down")
+            if self.trader is not None:
+                before = self.trader.status
+                self.trader.on_scan(quotes, self._universe, at)
+                if self.trader.status != before:
+                    record("Paper trader", self.trader.status)
         try:
-            self.option_chain = self._option_chain(at)
+            chain = self._option_chain(at, generation)
+        except (_Disconnected, RateLimitError):
+            raise
         except (RequestError, KeyError, IndexError, TypeError, ValueError):
-            if self.option_chain:  # keep showing the last prices, marked as old
-                self.option_chain = self.option_chain | {"stale": True}
-        if self.trader is not None:
-            before = self.trader.status
-            self.trader.on_scan(quotes, self._universe, at)
-            if self.trader.status != before:
-                record("Paper trader", self.trader.status)
+            chain = self.option_chain | {"stale": True} if self.option_chain else None
+        with self._connection_lock:
+            self._check(generation)
+            self.option_chain = chain
 
-    def _prepare_baselines(self, day: date, universe: dict[str, str]) -> None:
+    def _prepare_baselines(self, day: date, universe: dict[str, str], generation: int | None = None) -> None:
+        generation = self._generation if generation is None else generation
+        try:
+            self._load_baselines(day, universe, generation)
+        except (_Disconnected, RateLimitError, OSError) as exc:
+            self._baselines_for = None
+            self.trader.baseline_status = "14-day history paused. Waiting for the next scan."
+            record("14-day history", str(exc) if isinstance(exc, RateLimitError) else self.trader.baseline_status, error=True)
+
+    def _load_baselines(self, day, universe, generation):
         """Give the trader each stock's 14-day ATR and average opening volume and the day's watchlist, from a
         per-day file or SmartAPI history."""
         stocks, market = self.config.stocks, self.config.market
@@ -141,43 +186,44 @@ class MoversScanner:
             record("14-day history", f"Loaded today's saved figures for {len(found)} stocks")
         except (OSError, ValueError, KeyError, TypeError):
             found, history = {}, {}
+            cache = HistoryCache(self.config.data, self.directory)
             record("14-day history", f"Fetching minute history for {len(universe)} stocks")
             end = datetime.combine(day, market.session_open, IST)
+            start = end - timedelta(days=HISTORY_SPAN_DAYS)
             for count, (token, symbol) in enumerate(sorted(universe.items(), key=lambda item: item[1]), start=1):
+                self._check(generation)
                 self.trader.baseline_status = f"Preparing 14-day history · {count} of {len(universe)} stocks"
                 if count % 25 == 0:
                     record("14-day history", f"{count} of {len(universe)} stocks done")
-                for attempt in range(5):
-                    try:
-                        rows = self.client.historical_minutes(self._credentials, self._session, "NSE", token,
-                                                              end - timedelta(days=HISTORY_SPAN_DAYS), end)
-                    except (RequestError, AttributeError):  # rate limits are routine; AttributeError means no session yet
-                        sleep(2 + 2 * attempt)
-                        continue
-                    history[symbol] = daily_stats(rows, market.session_open, stocks.sip_range_minutes)
-                    item = baseline(history[symbol], day.isoformat(), stocks.sip_baseline_days)
-                    if item:
-                        found[symbol] = [str(item[0]), str(item[1])]
-                    break
-                else:
-                    record("14-day history", f"Gave up on {symbol} after 5 broker refusals", error=True)
+                try:
+                    candles = cache.get(token, start, end, lambda: self._fetch(
+                        generation, self.client.historical_minutes, "NSE", token, start, end))
+                except HistoryError as exc:
+                    record("14-day history", f"{symbol}: {exc}", error=True)
+                    continue
+                history[symbol] = daily_stats(encode_minutes(candles), market.session_open, stocks.sip_range_minutes)
+                item = baseline(history[symbol], day.isoformat(), stocks.sip_baseline_days)
+                if item:
+                    found[symbol] = [str(item[0]), str(item[1])]
             watchlist = watch_scores(history, day.isoformat(), stocks.sip_baseline_days, stocks.watchlist_size)
             with atomic_path(target) as temporary:
                 temporary.write_text(json.dumps({"baselines": found, "watchlist": watchlist}), encoding="utf-8")
             record("14-day history", f"Ready · figures for {len(found)} of {len(universe)} stocks")
-        self.trader.set_baselines(day, {symbol: (Decimal(atr), Decimal(volume)) for symbol, (atr, volume) in found.items()}, watchlist)
+        with self._connection_lock:
+            self._check(generation)
+            self.trader.set_baselines(day, {symbol: (Decimal(atr), Decimal(volume)) for symbol, (atr, volume) in found.items()}, watchlist)
         record("Watchlist", "Today: " + ", ".join(row["symbol"] for row in watchlist) if watchlist else "No watchlist today")
 
-    def _option_chain(self, at: datetime) -> dict:
+    def _option_chain(self, at: datetime, generation: int) -> dict:
         """NIFTY spot and the nearest expiry's calls and puts around the money, for viewing only."""
         master, step = self._master, float(self.config.options.strike_interval)
-        index = self.client.quotes(self._credentials, self._session, master.spot.exchange, [master.spot.token])[0]
+        index = self._quotes(generation, master.spot.exchange, [master.spot.token])[0]
         spot = float(index["ltp"])
         expiry = min(option.expiry for option in master.options if option.expiry >= as_ist(at).date())
         atm = round(spot / step) * step
         wanted = {option.token: option for option in master.options
                   if option.expiry == expiry and abs(float(option.strike) - atm) <= CHAIN_WINGS * step}
-        quotes = {quote["symbolToken"]: quote for quote in self.client.quotes(self._credentials, self._session, "NFO", sorted(wanted))}
+        quotes = {quote["symbolToken"]: quote for quote in self._quotes(generation, "NFO", sorted(wanted))}
         rows: dict[float, dict] = {}
         for token, option in wanted.items():
             if token in quotes:
@@ -199,19 +245,23 @@ class MoversScanner:
     def trade_chart(self, trade_id: int) -> dict:
         """Minute closes of the session of one paper trade, with its entry, stop, target and exit."""
         trade = self.trader.trade(trade_id) if self.trader else None
-        if trade is None or self._session is None:
+        with self._connection_lock:
+            generation, session = self._generation, self._session
+        if trade is None or session is None:
             raise ValueError("That trade or the broker session is not available.")
         day, market = date.fromisoformat(trade["session_day"]), self.config.market
         start = datetime.combine(day, market.session_open, IST)
         end = min(datetime.combine(day, market.session_close, IST), minute_floor(self.clock()))
         for attempt in range(4):
             try:
-                rows = self.client.historical_minutes(self._credentials, self._session, "NSE", trade["token"], start, end)
+                rows = self._fetch(generation, self.client.historical_minutes, "NSE", trade["token"], start, end)
                 break
-            except RequestError:
+            except RateLimitError:
+                raise
+            except RequestError as exc:
+                if not exc.retryable or attempt == 3:
+                    raise
                 sleep(1 + 2 * attempt)
-        else:
-            raise ValueError("The broker did not return prices just now. Try again in a moment.")
         clock = lambda stamp: as_ist(datetime.fromisoformat(stamp)).strftime("%H:%M") if stamp else None  # noqa: E731
         return {
             "symbol": trade["symbol"], "day": trade["session_day"], "strategy": trade["strategy"], "side": trade["side"],
@@ -223,9 +273,14 @@ class MoversScanner:
 
     def backtest(self, symbols: list[str], start: date, end: date) -> dict:
         """Replay the stock strategies over SmartAPI minute history. Raises ValueError with a readable reason."""
-        if self._session is None or not self._universe:
+        config = self.trader.config if self.trader else self.config
+        if config.stocks.capital_inr is None or config.stocks.risk_per_trade_pct is None:
+            raise ValueError("Set stock paper capital and risk per trade before running a backtest.")
+        with self._connection_lock:
+            generation, session, universe = self._generation, self._session, self._universe
+        if session is None or not universe:
             raise ValueError("The broker session is not ready yet. Try again after the first stock scan.")
-        tokens = {name: token for token, name in self._universe.items()}
+        tokens = {name: token for token, name in universe.items()}
         unknown = [symbol for symbol in symbols if symbol not in tokens]
         if unknown:
             raise ValueError("Not an F&O stock symbol: " + ", ".join(unknown) + ".")
@@ -245,10 +300,10 @@ class MoversScanner:
         record("Backtest", f"Started · {len(symbols)} stocks, {start:%d/%m/%Y} to {end:%d/%m/%Y}")
         for symbol in symbols:
             candles[symbol] = [row for since, until in spans for row in encode_minutes(cache.get(
-                tokens[symbol], since, until, lambda since=since, until=until: self.client.historical_minutes(
-                    self._credentials, self._session, "NSE", tokens[symbol], since, until)))]
+                tokens[symbol], since, until, lambda since=since, until=until: self._fetch(
+                    generation, self.client.historical_minutes, "NSE", tokens[symbol], since, until)))]
             record("Backtest", f"Fetched candles for {symbol} ({len(candles)} of {len(symbols)})")
-        config = self.trader.config if self.trader else self.config  # the Settings screen's choices apply to backtests too
+        self._check(generation)
         result = backtest(config, candles, start)
         record("Backtest", f"Finished · {len(result['trades'])} trades over {result['sessions']} sessions")
         self._remember(result, config)
@@ -277,60 +332,69 @@ class MoversScanner:
         with atomic_path(self._history_path()) as temporary:
             temporary.write_text(json.dumps([entry, *self.backtest_history()][:BACKTEST_HISTORY]), encoding="utf-8")
 
-    def _fail(self, state: str, message: str) -> None:
-        self._session = None
+    def _fail(self, state: str, message: str, *, keep_session=False) -> None:
+        if not keep_session:
+            self._session = None
+            self._generation += 1
+        if self.trader:
+            self.trader.invalidate_quotes()
+        if self.option_chain:
+            self.option_chain = self.option_chain | {"stale": True}
         self.snapshot = self.snapshot | {"state": state, "message": message}
         record("Stock scan", message, error=True)
 
     def _market_open(self, now: datetime) -> bool:
+        now = as_ist(now)
         market = self.config.market
         return now.weekday() < 5 and market.session_open <= now.time() <= market.session_close
 
     def connection(self, at: datetime) -> dict:
         """The broker link as the dashboard shows it."""
-        state = ("paused" if self.paused else "connecting" if self.snapshot.get("state") == "starting" else
+        state = ("paused" if self.paused else "rate_limited" if self.snapshot.get("state") == "rate_limited" else
+                 "connecting" if self.snapshot.get("state") == "starting" else
                  "connected" if self._session is not None else "disconnected")
         seen = self.snapshot.get("at")
         if state == "connected" and self._market_open(at) and seen and (as_ist(at) - datetime.fromisoformat(seen)).total_seconds() > 180:
             state = "stale"
         return {"state": state, "observed_at": seen, "market_open": self._market_open(at), "controllable": True,
-                "message": self.snapshot.get("message") if state in {"paused", "disconnected"} else None}
+                "message": self.snapshot.get("message") if state in {"paused", "disconnected", "rate_limited"} else None}
 
     def disconnect(self) -> None:
         """Stop talking to the broker until `connect`. Refused while a paper position needs prices to exit."""
-        if self.trader is not None and self.trader.held():
-            raise ValueError("Close the open paper position first. It needs live prices to reach its stop or target.")
-        self.paused, self._session = True, None
-        self.snapshot = self.snapshot | {"state": "paused", "message": "Disconnected from the dashboard."}
-        record("Broker", "Disconnected from the dashboard")
+        with self._connection_lock:
+            if self.trader is not None:
+                self.trader.invalidate_quotes(require_flat=True)
+            self.paused, self._session = True, None
+            self._generation += 1
+            if self.option_chain:
+                self.option_chain = self.option_chain | {"stale": True}
+            self.snapshot = self.snapshot | {"state": "paused", "message": "Disconnected from the dashboard."}
+            record("Broker", "Disconnected from the dashboard")
 
     def connect(self) -> None:
         """Log in again and scan once straight away, even outside market hours."""
-        self.paused, self._login_failures, self._force = False, 0, True
-        self.snapshot = {key: value for key, value in self.snapshot.items() if key != "message"} | {"state": "starting"}
-        record("Broker", "Connecting from the dashboard")
-        self._wake.set()
+        with self._connection_lock:
+            self.paused, self._login_failures, self._force = False, 0, True
+            self.snapshot = {key: value for key, value in self.snapshot.items() if key != "message"} | {"state": "starting"}
+            record("Broker", "Connecting from the dashboard")
+            self._wake.set()
 
     def run(self, stopped: Event) -> None:
         while not stopped.is_set():
             now = self.clock()
-            forced, self._force = self._force, False
-            if not self.paused and (self._market_open(now) or "at" not in self.snapshot or forced):
+            with self._connection_lock:
+                should_scan = not self.paused and (self._market_open(now) or "at" not in self.snapshot or self._force)
+                self._force = False
+                generation = self._generation
+            if should_scan:
                 try:
-                    self.scan_once()
-                except LoginError as exc:
-                    self._login_failures += 1
-                    if self._login_failures >= LOGIN_ATTEMPTS:
-                        self.paused = True  # stop before repeated bad logins can lock the broker account
-                        self._fail("stopped", f"{exc} Fix the login, then press Connect.")
-                    else:
-                        self._fail("error", str(exc))
-                except RequestError as exc:
-                    self._fail("error", str(exc))
-                except sqlite3.Error:
-                    self._fail("error", "Stock paper journal unavailable.")
-                except (OSError, ValueError):
-                    self._fail("error", "Instrument list unavailable.")
+                    self.scan_once(generation)
+                except _Disconnected:
+                    pass
+                except (LoginError, RequestError, sqlite3.Error, OSError, ValueError) as exc:
+                    with self._connection_lock:
+                        if generation == self._generation and not self.paused:
+                            self._scan_failed(exc)
             deadline = monotonic() + SCAN_SECONDS
             while monotonic() < deadline and not stopped.is_set():
                 if self._wake.wait(WATCH_SECONDS):  # Connect was pressed: scan now
@@ -338,15 +402,32 @@ class MoversScanner:
                     break
                 self._watch_positions()
 
+    def _scan_failed(self, exc) -> None:
+        if isinstance(exc, LoginError):
+            self._login_failures += 1
+            if self._login_failures >= LOGIN_ATTEMPTS:
+                self.paused = True
+                self._fail("stopped", f"{exc} Fix the login, then press Connect.")
+                return
+        message = (str(exc) if isinstance(exc, (LoginError, RequestError)) else
+                   "Stock paper journal unavailable." if isinstance(exc, sqlite3.Error) else "Instrument list unavailable.")
+        throttled = isinstance(exc, RateLimitError)
+        self._fail("rate_limited" if throttled else "error", message, keep_session=throttled)
+
     def _watch_positions(self) -> None:
         """Between scans, check the stops and targets of open paper positions against fresh quotes."""
-        if self.trader is None or self._session is None:
-            return
+        with self._connection_lock:
+            if self.trader is None or self._session is None or self.paused or not self._market_open(self.clock()):
+                return
+            generation = self._generation
         try:
             tokens = sorted({trade["token"] for trade in self.trader.held()})
             if tokens:
-                self.trader.manage(self.client.quotes(self._credentials, self._session, "NSE", tokens), self._universe, self.clock())
-        except (RequestError, sqlite3.Error):
+                quotes = self._quotes(generation, "NSE", tokens)
+                with self._connection_lock:
+                    self._check(generation)
+                    self.trader.manage(quotes, self._universe, self.clock())
+        except (_Disconnected, RequestError, sqlite3.Error):
             pass  # the next full scan reports a broker or journal problem
 
 

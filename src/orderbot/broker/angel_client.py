@@ -4,18 +4,23 @@ import binascii
 import os
 import re
 from collections.abc import Callable, Mapping
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
+from email.utils import parsedate_to_datetime
+from hashlib import sha256
+from math import ceil
 from ipaddress import ip_address
 from pathlib import Path
+import sqlite3
 from threading import Lock
-from time import monotonic, sleep
+from time import monotonic, sleep, time
 from uuid import getnode
 
 import pyotp
 import requests
 
-from orderbot.core.config import BrokerConfig
+from orderbot.core.config import BrokerConfig, Config
 from orderbot.core.ist_time import as_ist, now_ist, require_aware
 
 
@@ -32,6 +37,16 @@ class RequestError(RuntimeError):
     def __init__(self, message: str, *, retryable: bool = False):
         super().__init__(message)
         self.retryable = retryable
+
+
+class RateLimitError(RequestError):
+    """SmartAPI account cooldown is active. Callers should defer their current job."""
+
+
+@dataclass
+class _RestState:
+    next_request_at: float = 0.0
+    blocked_until: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -120,12 +135,42 @@ class AngelClient:
         *,
         transport=requests,
         clock: Callable[[], datetime] = now_ist,
+        rest_state_path: Path | None = None,
     ):
         self.config = config
         self._transport = transport
         self._clock = clock
         self._rest_lock = Lock()
-        self._next_request_at = 0.0
+        self._rest_state_path = rest_state_path
+        self._states: dict[str, _RestState] = {}
+
+    @classmethod
+    def for_workspace(cls, config: Config, directory: Path):
+        return cls(config.broker, rest_state_path=directory / config.data.history_cache_dir / "smartapi-rest.sqlite3")
+
+    @contextmanager
+    def _rest_state(self, account: str):
+        if self._rest_state_path is None:
+            with self._rest_lock:
+                yield self._states.setdefault(account, _RestState())
+            return
+        try:
+            self._rest_state_path.parent.mkdir(parents=True, exist_ok=True)
+            with closing(sqlite3.connect(self._rest_state_path, timeout=self.config.timeout_seconds)) as db, db:
+                db.execute("CREATE TABLE IF NOT EXISTS rest_gate (account TEXT PRIMARY KEY, next_request REAL, blocked_until REAL)")
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute("SELECT next_request, blocked_until FROM rest_gate WHERE account=?", (account,)).fetchone()
+                state = _RestState(*row) if row else _RestState()
+                before = (state.next_request_at, state.blocked_until)
+                try:
+                    yield state
+                finally:
+                    after = (state.next_request_at, state.blocked_until)
+                    if after != before:
+                        db.execute("INSERT OR REPLACE INTO rest_gate VALUES (?, ?, ?)", (account, *after))
+                    db.commit()  # preserve cooldown and pacing even when the broker rejects the request
+        except (OSError, sqlite3.Error):
+            raise RequestError("SmartAPI request gate is unavailable.") from None
 
     @staticmethod
     def _headers(credentials: Credentials) -> dict[str, str]:
@@ -141,7 +186,7 @@ class AngelClient:
         if credentials.public_ip is not None:
             headers["X-ClientPublicIP"] = credentials.public_ip
         return headers
-    def login(self, credentials: Credentials) -> Session:
+    def login(self, credentials: Credentials, *, check=None) -> Session:
         def payload():
             try:
                 now = require_aware(self._clock())
@@ -151,7 +196,9 @@ class AngelClient:
             return {"clientcode": credentials.client_code, "password": credentials.mpin, "totp": code}
 
         try:
-            data = self._post("login", LOGIN_ROUTE, self._headers(credentials), payload)
+            data = self._post("login", LOGIN_ROUTE, credentials, self._headers(credentials), payload, check)
+        except RateLimitError:
+            raise
         except RequestError as exc:
             raise LoginError(str(exc)) from None
         if not isinstance(data, dict):
@@ -163,54 +210,90 @@ class AngelClient:
 
     def historical_minutes(
         self, credentials: Credentials, session: Session, exchange: str, token: str,
-        start: datetime, end: datetime,
+        start: datetime, end: datetime, *, check=None,
     ) -> list:
         headers = self._headers(credentials) | {"Authorization": "Bearer " + session.jwt_token}
-        data = self._post("history", HISTORY_ROUTE, headers, lambda: {
+        data = self._post("history", HISTORY_ROUTE, credentials, headers, lambda: {
             "exchange": exchange,
             "symboltoken": token,
             "interval": "ONE_MINUTE",
             "fromdate": as_ist(start).strftime("%Y-%m-%d %H:%M"),
             "todate": as_ist(end).strftime("%Y-%m-%d %H:%M"),
-        })
+        }, check)
         if not isinstance(data, list):
             raise RequestError("SmartAPI history response did not contain a candle array.")
         return data
 
-    def quotes(self, credentials: Credentials, session: Session, exchange: str, tokens: list[str]) -> list:
+    def quotes(self, credentials: Credentials, session: Session, exchange: str, tokens: list[str], *, check=None) -> list:
         """Full-mode market quotes for up to 50 tokens. Read-only market data."""
+        if not 1 <= len(tokens) <= self.config.rest_quote_token_limit:
+            raise RequestError(f"SmartAPI quotes require 1 to {self.config.rest_quote_token_limit} tokens per request.")
         headers = self._headers(credentials) | {"Authorization": "Bearer " + session.jwt_token}
-        data = self._post("quote", QUOTE_ROUTE, headers, lambda: {
+        data = self._post("quote", QUOTE_ROUTE, credentials, headers, lambda: {
             "mode": "FULL", "exchangeTokens": {exchange: list(tokens)},
-        })
+        }, check)
         if not isinstance(data, dict) or not isinstance(data.get("fetched"), list):
             raise RequestError("SmartAPI quote response did not contain fetched quotes.")
         return data["fetched"]
 
-    def _post(self, action: str, route: str, headers: dict, payload: Callable[[], dict]):
+    def _post(self, action: str, route: str, credentials: Credentials, headers: dict, payload: Callable[[], dict], check):
         if (action, route) not in {("login", LOGIN_ROUTE), ("history", HISTORY_ROUTE), ("quote", QUOTE_ROUTE)}:
             raise RequestError("This paper-mode client only supports login, candle history and quotes.")
-        with self._rest_lock:
-            delay = self._next_request_at - monotonic()
-            if delay > 0:
-                sleep(delay)
-            parameters = payload()
-            self._next_request_at = monotonic() + 1 / self.config.rest_max_requests_per_second
-            try:
-                response = self._transport.post(
-                    self.config.base_url + route,
-                    headers=headers,
-                    json=parameters,
-                    timeout=self.config.timeout_seconds,
-                    allow_redirects=False,
-                )
-            except requests.RequestException:
-                raise RequestError(f"SmartAPI {action} transport failed.", retryable=True) from None
+        account = sha256(credentials.client_code.upper().encode()).hexdigest()
+        clock = time if self._rest_state_path is not None else monotonic
+        while True:
+            if check is not None:
+                check()
+            with self._rest_state(account) as state:
+                now = clock()
+                if state.blocked_until > now:
+                    raise self._cooldown_error(state.blocked_until - now)
+                delay = state.next_request_at - now
+                if delay <= 0:
+                    if check is not None:
+                        check()
+                    parameters = payload()
+                    state.next_request_at = clock() + 1 / self.config.rest_max_requests_per_second
+                    return self._send(action, route, headers, parameters, state, clock)
+            sleep(delay)
 
+    @staticmethod
+    def _cooldown_error(seconds: float) -> RateLimitError:
+        return RateLimitError(f"SmartAPI rate-limit cooldown is active. Retry in {ceil(seconds)} seconds.")
+
+    def _throttled(self, response, state: _RestState, clock):
+        duration = self.config.rest_rate_limit_cooldown_seconds
+        headers = getattr(response, "headers", None)
+        header = next((value for key, value in headers.items() if key.lower() == "retry-after"), None) if isinstance(headers, Mapping) else None
+        if isinstance(header, str):
+            try:
+                duration = int(header) if header.strip().isascii() and header.strip().isdigit() else (
+                    require_aware(parsedate_to_datetime(header)).timestamp() - time()
+                )
+            except (ValueError, OverflowError, TypeError):
+                pass
+        duration = max(duration, 1 / self.config.rest_max_requests_per_second)
+        state.blocked_until = clock() + duration
+        return self._cooldown_error(duration)
+
+    def _send(self, action, route, headers, parameters, state, clock):
+        try:
+            response = self._transport.post(
+                self.config.base_url + route,
+                headers=headers,
+                json=parameters,
+                timeout=self.config.timeout_seconds,
+                allow_redirects=False,
+            )
+        except requests.RequestException:
+            raise RequestError(f"SmartAPI {action} transport failed.", retryable=True) from None
+
+        if response.status_code in {403, 429}:
+            raise self._throttled(response, state, clock)
         if not 200 <= response.status_code < 300:
             raise RequestError(
                 f"SmartAPI {action} returned HTTP {response.status_code}.",
-                retryable=response.status_code in {403, 429} or response.status_code >= 500,
+                retryable=response.status_code >= 500,
             )
         try:
             envelope = response.json()
@@ -220,9 +303,9 @@ class AngelClient:
             raise RequestError(f"SmartAPI returned an invalid {action} response.")
         if envelope.get("status") is not True:
             error_code = envelope.get("errorcode")
+            if error_code == "AB1021":
+                raise self._throttled(response, state, clock)
             if isinstance(error_code, str) and re.fullmatch(r"AB\d{4}", error_code):
-                raise RequestError(
-                    f"SmartAPI rejected {action} ({error_code}).", retryable=error_code == "AB1021"
-                )
+                raise RequestError(f"SmartAPI rejected {action} ({error_code}).")
             raise RequestError(f"SmartAPI rejected {action}.")
         return envelope.get("data")

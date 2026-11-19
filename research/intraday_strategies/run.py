@@ -40,7 +40,7 @@ def load_minutes(symbol: str, config) -> list:
 
     def fetch(since, until):
         if not session:  # log in only when the cache does not already hold this piece
-            client = AngelClient(config.broker)
+            client = AngelClient.for_workspace(config, ROOT)
             credentials = read_credentials(config.broker, env_file=ROOT / ".env")
             session.update(client=client, credentials=credentials, tokens=client.login(credentials))
         return session["client"].historical_minutes(session["credentials"], session["tokens"], "NSE", tokens[symbol], since, until)
@@ -58,6 +58,8 @@ def main() -> None:
     parser.add_argument("--trades", action="store_true", help="List every trade")
     args = parser.parse_args()
     config = load_config(ROOT / "config.yaml")
+    if config.stocks.capital_inr is None or config.stocks.risk_per_trade_pct is None:
+        parser.error("Set the stock paper capital and risk per trade in config.yaml before running a backtest.")
     days = build_days(load_minutes(args.symbol.upper(), config))
     risk = config.stocks.capital_inr * config.stocks.risk_per_trade_pct / 100
     print(f"{args.symbol.upper()} · {len(days)} sessions · {days[0].date} to {days[-1].date} · "

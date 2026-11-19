@@ -100,8 +100,9 @@ stocks:
   exit_on_vwap_cross: false
   watchlist_size: 10
   watchlist_only: false
-  capital_inr: "100000"
-  risk_per_trade_pct: "0.5"
+  capital_inr: null
+  risk_per_trade_pct: null
+  max_quote_age_seconds: 15
   min_stop_pct: "0.6"
   max_stop_pct: "1"
   max_spread_fraction: "0.001"
@@ -193,6 +194,8 @@ broker:
   base_url: https://apiconnect.angelone.in
   timeout_seconds: 10
   rest_max_requests_per_second: 1
+  rest_quote_token_limit: 50
+  rest_rate_limit_cooldown_seconds: 60
   api_key_env: ANGEL_TRADING_API_KEY
   client_code_env: ANGEL_CLIENT_ID
   mpin_env: ANGEL_PASSWORD

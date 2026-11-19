@@ -10,7 +10,7 @@ from pathlib import Path
 from sqlite3 import Error as DatabaseError
 from time import sleep
 
-from orderbot.broker.angel_client import AngelClient, read_credentials
+from orderbot.broker.angel_client import AngelClient, RateLimitError, read_credentials
 from orderbot.broker.history import HistoryCache, HistoryError, encode_minutes, parse_minutes
 from orderbot.broker.instruments import NSE_CASH, NSE_DERIVATIVES, Instrument, load_master
 from orderbot.broker.ws_client import FeedError, FeedNotice, MarketFeed
@@ -84,7 +84,7 @@ def compare_with_broker(config: Config, directory: Path, day: date) -> tuple[dic
     future = load_master(config.data, config.market.underlying, day, directory, download=False).front_future(day)
     replay = _replay_session(config, directory, session, future)
     cache = HistoryCache(config.data, directory)
-    client = AngelClient(config.broker)
+    client = AngelClient.for_workspace(config, directory)
     credentials = auth = None
 
     def request_reference():
@@ -128,7 +128,7 @@ def capture_session(
     if set(option_tokens) - options:
         raise ValueError("Capture option tokens must be unexpired NIFTY options from the dated master.")
 
-    client = AngelClient(config.broker)
+    client = AngelClient.for_workspace(config, directory)
     auth = client.login(credentials)
     cache = HistoryCache(config.data, directory)
     tick_dir = directory / config.data.tick_archive_dir
@@ -157,7 +157,7 @@ def capture_session(
             return cache.get(future.token, start, end, lambda: client.historical_minutes(
                 credentials, auth, future.exchange, future.token, start, end,
             ))
-        except HistoryError as exc:
+        except (HistoryError, RateLimitError) as exc:
             logger.warning("history_unavailable", extra={**context, "fields": {"reason": str(exc)}})
             return ()
 

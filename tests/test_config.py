@@ -17,6 +17,8 @@ def test_checked_in_config_round_trips(tmp_path):
     assert config.runtime.mode == "paper"
     assert config.risk.capital_inr is None
     assert config.risk.risk_per_trade_pct is None
+    assert config.stocks.capital_inr is None
+    assert config.stocks.risk_per_trade_pct is None
 
 
 @pytest.mark.parametrize(
@@ -32,6 +34,8 @@ def test_checked_in_config_round_trips(tmp_path):
         ("risk", "risk_per_trade_pct", True),
         ("risk", "max_open_positions", 2),
         ("risk", "max_round_trip_friction_pct", 101),
+        ("broker", "rest_max_requests_per_second", 1.1),
+        ("broker", "rest_quote_token_limit", 51),
         ("costs", "stt_sell_rate", -1),
         ("costs", "gst_rate", 18),
         ("costs", "slippage_ticks", True),

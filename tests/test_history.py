@@ -14,16 +14,16 @@ ROOT = Path(__file__).resolve().parents[1]
 CONFIG = load_config(ROOT / "config.yaml")
 
 
-def test_history_retries_throttle_caches_and_excludes_open_candle(tmp_path):
+def test_history_retries_server_error_caches_and_excludes_open_candle(tmp_path):
     session = TradingSession.from_config(date(2026, 11, 18), CONFIG.market)
     start = session.opens_at
     until = start + timedelta(minutes=2)
     response = Mock()
     response.status_code = 200
     response.json.return_value = json.loads((ROOT / "tests" / "fixtures" / "history.json").read_text())
-    throttled = Mock(status_code=403)
+    unavailable = Mock(status_code=503)
     transport = Mock()
-    transport.post.side_effect = [throttled, response]
+    transport.post.side_effect = [unavailable, response]
     credentials = Credentials("test-key", "test-client", "0123", "fake", "192.0.2.1", "203.0.113.10", "02:00:00:00:00:01")
     sleeper = Mock()
     history = HistoryCache(CONFIG.data, tmp_path, sleep=sleeper, jitter=lambda upper: upper / 2)

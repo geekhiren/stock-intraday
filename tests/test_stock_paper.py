@@ -1,5 +1,6 @@
 from datetime import timedelta
 from decimal import Decimal
+import json
 from pathlib import Path
 
 import pytest
@@ -11,9 +12,27 @@ from orderbot.reporting.alerts import AlertOutbox
 from orderbot.strategy.stock_paper import StockPaperTrader, intraday_charges
 
 
-CONFIG = load_config(Path(__file__).resolve().parents[1] / "config.yaml")
+UNFUNDED = load_config(Path(__file__).resolve().parents[1] / "config.yaml")
+SAFETY = json.loads((Path(__file__).parent / "fixtures" / "paper_safety.json").read_text())
+CONFIG = UNFUNDED.model_copy(update={"stocks": UNFUNDED.stocks.model_copy(update={
+    "capital_inr": Decimal(SAFETY["stock_capital"]), "risk_per_trade_pct": Decimal(SAFETY["stock_risk_pct"]),
+})})
 UNIVERSE = {"1": "ALPHA", "2": "BETA"}
 MINUTE = timedelta(minutes=1)
+
+
+def timed(quotes, at):
+    return [{"exchFeedTime": at.isoformat()} | quote for quote in quotes]
+
+
+class Trader(StockPaperTrader):
+    """Supply exchange timestamps for the older fixtures, with explicit overrides for freshness tests."""
+
+    def on_scan(self, quotes, universe, at):
+        super().on_scan(timed(quotes, at), universe, at)
+
+    def manage(self, quotes, universe, at):
+        super().manage(timed(quotes, at), universe, at)
 
 
 def quote(token, ltp, *, open_, high, low, close, vwap, volume=1_000_000, spread="0.05", depth=1000):
@@ -27,6 +46,10 @@ def alpha(ltp, **changes):
     return quote("1", ltp, **({"open_": 200, "high": max(201, ltp), "low": 199.95, "close": 199, "vwap": 200.4} | changes))
 
 
+def beta(ltp, **changes):
+    return quote("2", ltp, **({"open_": 500, "high": 500.1, "low": min(498, ltp), "close": 503, "vwap": 499} | changes))
+
+
 def test_intraday_charges_match_hand_calculation():
     # 500 shares bought at 200.00 and sold at 201.50: brokerage 40.00, STT 25.19, exchange 6.16, SEBI 0.20,
     # stamp 3.00, GST 8.35.
@@ -37,7 +60,7 @@ def test_intraday_charges_match_hand_calculation():
 
 def test_opening_range_breakout_sizes_fills_and_books_net_to_the_paisa(tmp_path):
     db = tmp_path / "stocks.sqlite3"
-    trader = StockPaperTrader(CONFIG, db)
+    trader = Trader(CONFIG, db)
     at = parse_timestamp("2026-11-30T09:30:10+05:30")
     trader.on_scan([alpha(200.5), {"symbolToken": "2", "ltp": 0}], UNIVERSE, at)
     assert trader.status == "Watching opening-range breakouts" and trader.snapshot(at)["open"] == []
@@ -51,7 +74,7 @@ def test_opening_range_breakout_sizes_fills_and_books_net_to_the_paisa(tmp_path)
     trader.on_scan([alpha(202.0)], UNIVERSE, at + 2 * MINUTE)
     assert trader.status == "Managing the open position"
     trader.on_scan([alpha(203.15)], UNIVERSE, at + 3 * MINUTE)  # bid 203.10 is through the target
-    book = StockPaperTrader(CONFIG, db).snapshot(at + 3 * MINUTE)  # a restarted process reads the same journal
+    book = Trader(CONFIG, db).snapshot(at + 3 * MINUTE)  # a restarted process reads the same journal
     trade, = book["trades"]
     # Gross 471.20 less brokerage 40.00, STT 12.59, exchange 3.08, SEBI 0.10, stamp 1.50, GST 7.77.
     assert (trade["exit"], trade["exit_reason"], trade["net_paise"]) == ("203.10", "target", 40616)
@@ -66,7 +89,7 @@ def test_opening_range_breakout_sizes_fills_and_books_net_to_the_paisa(tmp_path)
 
 def test_short_breakout_stops_out_and_stop_trading_blocks_entries(tmp_path):
     db = tmp_path / "stocks.sqlite3"
-    trader = StockPaperTrader(CONFIG, db)
+    trader = Trader(CONFIG, db)
     at = parse_timestamp("2026-11-30T09:30:10+05:30")
     beta = lambda ltp, **changes: quote("2", ltp, **({"open_": 500, "high": 500.1, "low": min(498, ltp), "close": 503,  # noqa: E731
                                                        "vwap": 499} | changes))
@@ -85,7 +108,7 @@ def test_short_breakout_stops_out_and_stop_trading_blocks_entries(tmp_path):
 
 
 def test_late_start_skips_the_opening_range(tmp_path):
-    trader = StockPaperTrader(CONFIG, tmp_path / "stocks.sqlite3")
+    trader = Trader(CONFIG, tmp_path / "stocks.sqlite3")
     at = parse_timestamp("2026-11-30T09:40:00+05:30")
     trader.on_scan([alpha(200.5)], UNIVERSE, at)
     trader.on_scan([alpha(201.2)], UNIVERSE, at + MINUTE)
@@ -95,7 +118,7 @@ def test_late_start_skips_the_opening_range(tmp_path):
 def test_manual_trade_stats_and_backtest_reuse_the_live_rules(tmp_path):
     from orderbot.strategy.stock_backtest import backtest
 
-    trader = StockPaperTrader(CONFIG, tmp_path / "stocks.sqlite3")
+    trader = Trader(CONFIG, tmp_path / "stocks.sqlite3")
     at = parse_timestamp("2026-11-30T11:00:00+05:30")
     assert trader.manual_entry("ALPHA", "long", at).startswith("No fresh quote")
     trader.on_scan([alpha(200.0)], UNIVERSE, at)
@@ -136,7 +159,7 @@ def test_stocks_in_play_ranks_by_opening_volume_and_holds_to_square_off(tmp_path
     assert stats == [("2026-11-26", 4.0, 100, 102.0, 150), ("2026-11-27", 6.0, 300, 106.0, 370)]
     assert baseline(stats, "2026-11-30", 2) == (Decimal("5.0"), Decimal("200.0")) and baseline(stats, "2026-11-27", 2) is None
 
-    trader = StockPaperTrader(CONFIG, tmp_path / "stocks.sqlite3")
+    trader = Trader(CONFIG, tmp_path / "stocks.sqlite3")
     at = parse_timestamp("2026-11-30T09:20:10+05:30")
     trader.set_baselines(at.date(), {"ALPHA": (Decimal("4"), Decimal("100000")), "BETA": (Decimal("9"), Decimal("900000"))})
     play = lambda ltp, **changes: quote("1", ltp, **({"open_": 200, "high": 201.2, "low": 199.8, "close": 199, "vwap": 200.5,  # noqa: E731
@@ -157,7 +180,7 @@ def test_stocks_in_play_ranks_by_opening_volume_and_holds_to_square_off(tmp_path
 
 
 def test_fast_watch_exits_between_scans_and_never_enters(tmp_path):
-    trader = StockPaperTrader(CONFIG, tmp_path / "stocks.sqlite3")
+    trader = Trader(CONFIG, tmp_path / "stocks.sqlite3")
     at = parse_timestamp("2026-11-30T11:00:00+05:30")
     trader.manage([alpha(201.2)], UNIVERSE, at)
     assert trader.held() == []
@@ -185,7 +208,7 @@ def test_watchlist_scores_indicator_exits_and_daily_report(tmp_path):
 
     db = tmp_path / "stocks.sqlite3"
     config = CONFIG.model_copy(update={"stocks": CONFIG.stocks.model_copy(update={"exit_on_vwap_cross": True})})
-    trader = StockPaperTrader(config, db)
+    trader = Trader(config, db)
     at = parse_timestamp("2026-11-30T11:00:00+05:30")
     trader.on_scan([alpha(200.6)], UNIVERSE, at)  # VWAP is 200.4
     assert trader.manual_entry("ALPHA", "long", at) is None
@@ -203,7 +226,7 @@ def test_watchlist_scores_indicator_exits_and_daily_report(tmp_path):
 
 def test_settings_are_validated_saved_and_applied_and_summaries_report_periods(tmp_path):
     path = tmp_path / "stock-settings.json"
-    trader = StockPaperTrader(CONFIG, tmp_path / "stocks.sqlite3", settings_path=path)
+    trader = Trader(CONFIG, tmp_path / "stocks.sqlite3", settings_path=path)
     assert trader.settings()["values"]["capital_inr"] == "100000" and trader.settings()["values"]["max_positions"] == 2
     for bad in ({"risk_per_trade_pct": "5"}, {"capital_inr": "-1"}, {"paper_trading": False}, {"sip_entries": "yes"}):
         with pytest.raises(ValueError):
@@ -211,7 +234,7 @@ def test_settings_are_validated_saved_and_applied_and_summaries_report_periods(t
     assert not path.exists()
     saved = trader.apply_settings({"capital_inr": "200000", "max_positions": 1, "sip_entries": False})
     assert saved["values"]["capital_inr"] == "200000" and saved["defaults"]["capital_inr"] == "100000"
-    restarted = StockPaperTrader(CONFIG, tmp_path / "stocks.sqlite3", settings_path=path)
+    restarted = Trader(CONFIG, tmp_path / "stocks.sqlite3", settings_path=path)
     assert restarted.config.stocks.capital_inr == 200000 and restarted.config.stocks.sip_entries is False
 
     at = parse_timestamp("2026-11-30T11:00:00+05:30")
@@ -229,7 +252,7 @@ def test_settings_are_validated_saved_and_applied_and_summaries_report_periods(t
 
 def test_why_no_trade_explains_a_late_start_and_a_pressed_stop(tmp_path):
     db = tmp_path / "stocks.sqlite3"
-    trader = StockPaperTrader(CONFIG, db)
+    trader = Trader(CONFIG, db)
     at = parse_timestamp("2026-11-30T09:41:00+05:30")
     assert trader.snapshot(at)["why"] == ["The bot has not completed a price scan today."]
     trader.on_scan([alpha(200.5)], UNIVERSE, at)
@@ -239,9 +262,78 @@ def test_why_no_trade_explains_a_late_start_and_a_pressed_stop(tmp_path):
     assert trader.snapshot(at)["why"][0] == "Stop trading was pressed at 09:41 IST, which blocks every entry for the day."
     assert trader.snapshot(parse_timestamp("2026-11-28T11:00:00+05:30"))["why"] == ["The market is closed at the weekend."]
 
-    on_time = StockPaperTrader(CONFIG, tmp_path / "second.sqlite3")
+    on_time = Trader(CONFIG, tmp_path / "second.sqlite3")
     start = parse_timestamp("2026-11-30T09:30:10+05:30")
     on_time.on_scan([alpha(200.5)], UNIVERSE, start)
     assert on_time.snapshot(start)["why"][-1] == "Opening-range breakouts are being watched until 10:00."
     on_time.on_scan([alpha(201.2)], UNIVERSE, start + MINUTE)
     assert on_time.snapshot(start + MINUTE)["why"] == []  # a trade is open, so there is nothing to explain
+
+
+def test_stock_fill_requires_fresh_exchange_time_and_open_session(tmp_path):
+    trader = StockPaperTrader(CONFIG, tmp_path / "stocks.sqlite3")
+    at, before = (parse_timestamp(SAFETY[key]) for key in ("at", "premarket"))
+    trader.on_scan(timed([alpha(200)], before), UNIVERSE, before)
+    assert trader.manual_entry("ALPHA", "long", before)
+    trader.on_scan(timed([alpha(200)], at - timedelta(hours=3)), UNIVERSE, at)
+    assert trader.manual_entry("ALPHA", "long", at)
+    trader.on_scan([alpha(200)], UNIVERSE, at)
+    assert trader.manual_entry("ALPHA", "long", at)
+    trader.on_scan([alpha(200) | {"exchFeedTime": "30-Nov-2026 11:00:00"}], UNIVERSE, at)
+    assert trader.manual_entry("ALPHA", "long", at) is None
+    trade, = trader.held()
+    assert trader.manual_exit(trade["trade_id"], at + timedelta(hours=3))
+    assert trader.manual_exit(trade["trade_id"], at - timedelta(seconds=1))
+    assert trader.trade(trade["trade_id"])["exit_at_utc"] is None
+
+
+def test_exit_sweeps_displayed_depth_and_resumes_after_restart(tmp_path):
+    db = tmp_path / "stocks.sqlite3"
+    trader = Trader(CONFIG, db)
+    at = parse_timestamp(SAFETY["at"])
+    trader.on_scan([alpha(200)], UNIVERSE, at)
+    assert trader.manual_entry("ALPHA", "long", at) is None
+    position, = trader.snapshot(at)["open"]
+    thin = alpha(198.8)
+    thin["depth"]["buy"] = SAFETY["thin_bids"]
+    thin["depth"]["sell"] = []  # the exit side alone is enough for a resting sell to fill
+    trader.manage([thin], UNIVERSE, at + MINUTE)
+    open_trade, = trader.snapshot(at + MINUTE)["open"]
+    assert open_trade["remaining_quantity"] == position["quantity"] - 3
+    assert open_trade["pending_exit_reason"] == "stop"
+    trader = Trader(CONFIG, db)
+    trader.manage([thin], UNIVERSE, at + MINUTE)
+    assert trader.snapshot(at + MINUTE)["open"][0]["remaining_quantity"] == position["quantity"] - 3
+    trader.manage([alpha(200)], UNIVERSE, at + 2 * MINUTE)
+    closed, = trader.snapshot(at + 2 * MINUTE)["trades"]
+    assert closed["exit_reason"] == "stop" and closed["remaining_quantity"] == 0
+    assert closed["exit"] == "199.94"
+    assert closed["net_paise"] == -8704
+
+
+def test_unresolved_overnight_position_blocks_manual_and_automatic_entries(tmp_path):
+    trader = Trader(CONFIG, tmp_path / "stocks.sqlite3")
+    at = parse_timestamp(SAFETY["at"])
+    trader.on_scan([alpha(200)], UNIVERSE, at)
+    assert trader.manual_entry("ALPHA", "long", at) is None
+    tomorrow = at.replace(hour=9, minute=30) + timedelta(days=1)
+    trader.on_scan([beta(499)], UNIVERSE, tomorrow)
+    trader.on_scan([beta(497.5, low=497.5)], UNIVERSE, tomorrow + MINUTE)
+    assert [row["symbol"] for row in trader.held()] == ["ALPHA"]
+    assert "overnight" in trader.manual_entry("BETA", "short", tomorrow + MINUTE).lower()
+    trader.manage([alpha(200)], UNIVERSE, tomorrow + 2 * MINUTE)
+    assert trader.held() == []
+
+
+def test_unfunded_stock_config_vetoes_entries_and_keeps_exits_available(tmp_path):
+    db = tmp_path / "stocks.sqlite3"
+    at = parse_timestamp(SAFETY["at"])
+    trader = Trader(CONFIG, db)
+    trader.on_scan([alpha(200)], UNIVERSE, at)
+    assert trader.manual_entry("ALPHA", "long", at) is None
+    trader = Trader(UNFUNDED, db)
+    trader.on_scan([beta(499)], UNIVERSE, at + MINUTE)
+    assert "capital" in trader.manual_entry("BETA", "short", at + MINUTE).lower()
+    assert trader.snapshot(at + MINUTE)["capital_paise"] is None
+    trader.manage([alpha(198)], UNIVERSE, at + 2 * MINUTE)
+    assert trader.held() == []

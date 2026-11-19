@@ -319,7 +319,7 @@ def run_real_paper_trial(config: Config, directory: Path, calendar: Path, *, thr
         master = load_master(config.data, config.market.underlying, session.day, directory)
         future = master.front_future(session.day)
         report["future"] = future.symbol
-        client = AngelClient(config.broker)
+        client = AngelClient.for_workspace(config, directory)
         credentials = read_credentials(config.broker, env_file=directory / ".env")
         auth = client.login(credentials)
         headers = {"Authorization": "Bearer " + auth.jwt_token, "x-api-key": credentials.api_key,

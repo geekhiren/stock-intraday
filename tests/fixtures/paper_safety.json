@@ -1,0 +1,9 @@
+{
+  "at": "2026-11-30T11:00:00+05:30",
+  "premarket": "2026-11-30T09:05:00+05:30",
+  "stock_capital": "100000",
+  "stock_risk_pct": "0.5",
+  "retry_after_seconds": 90,
+  "thin_bids": [{"price": "198.75", "quantity": 1}, {"price": "198.70", "quantity": 2}],
+  "missing_opening_minute_index": 1
+}

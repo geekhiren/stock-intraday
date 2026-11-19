@@ -13,6 +13,7 @@ const brokerStates = {
   simulated: 'Simulated feed', connected: 'Broker connected', connecting: 'Broker connecting',
   disconnected: 'Broker disconnected', stale: 'Broker feed stale', reconnecting: 'Broker reconnecting',
   paused: 'Broker disconnected by you',
+  rate_limited: 'SmartAPI cooldown',
 };
 const strategies = { sip: 'Stocks in play', orb: 'Opening range', vwap: 'VWAP crossover', manual: 'Manual', all: 'All trades' };
 const setups = { holding_highs: 'Holding highs', holding_lows: 'Holding lows' };
@@ -401,8 +402,9 @@ function closeButton(trade) {
   button.addEventListener('click', async () => {
     button.disabled = true;
     try {
-      await post('/api/stock-exit', { trade_id: trade.trade_id });
-      byId('manual-message').textContent = `Closed ${trade.symbol}.`;
+      const result = await post('/api/stock-exit', { trade_id: trade.trade_id });
+      byId('manual-message').textContent = result.remaining_quantity
+        ? `${trade.symbol} exit pending · ${result.remaining_quantity} shares still open.` : `Closed ${trade.symbol}.`;
     } catch (error) {
       byId('manual-message').textContent = error.message;
     }
@@ -433,13 +435,14 @@ function renderPositionCards(open, now) {
     const entry = Number(trade.entry);
     const stop = Number(trade.stop);
     const mark = trade.mark === null ? entry : Number(trade.mark);
-    const live = Math.round(direction * (mark - entry) * trade.quantity * 100);
+    const remaining = trade.remaining_quantity ?? trade.quantity;
+    const live = Math.round(direction * (mark - entry) * remaining * 100);
     const cushion = Math.abs(entry - stop);
     const left = Math.min(1, Math.max(0, direction * (mark - stop) / (2 * cushion)));  // 0 at the stop, half at entry
     const card = element('div', undefined, 'position-card');
     const head = element('header');
-    head.append(element('b', `${trade.symbol} · ${trade.side === 'long' ? 'Buy' : 'Short'} ${trade.quantity}`),
-      element('small', `Held ${heldFor(trade.entry_at, now)}`));
+    head.append(element('b', `${trade.symbol} · ${trade.side === 'long' ? 'Buy' : 'Short'} ${remaining}`),
+      element('small', trade.pending_exit_reason ? `${label(trade.pending_exit_reason)} exit pending` : `Held ${heldFor(trade.entry_at, now)}`));
     const meter = element('div', undefined, 'meter');
     meter.style.setProperty('--fill', left.toFixed(3));
     meter.title = `${(100 * direction * (mark - stop) / cushion).toFixed(0)}% of the stop distance left`;
@@ -447,7 +450,7 @@ function renderPositionCards(open, now) {
     ends.append(element('span', `Stop ${price(trade.stop)}`), element('span', `Entry ${price(trade.entry)}`),
       element('span', trade.target ? `Target ${price(trade.target)}` : 'No target'));
     card.append(head, element('div', money(live), `live ${tone(live)}`),
-      element('small', `Live P&L before charges · last price ${price(trade.mark)}`), meter, ends);
+      element('small', `Open shares P&L before charges · last price ${price(trade.mark)}`), meter, ends);
     return card;
   }));
 }
@@ -473,7 +476,7 @@ function renderSettings(settings) {
     const field = settingsForm.elements[name];
     if (!field) continue;
     if (field.type === 'checkbox') field.checked = value;
-    else field.value = value;
+    else field.value = value ?? '';
   }
   settingsForm.elements.risk_per_trade_pct.max = settings.max_risk_pct;
   settingsForm.dataset.defaults = JSON.stringify(settings.defaults);
@@ -484,7 +487,7 @@ function settingsFromForm() {
   const values = {};
   for (const field of settingsForm.elements) {
     if (!field.name) continue;
-    values[field.name] = field.type === 'checkbox' ? field.checked : field.name === 'max_positions' ? Number(field.value) : field.value;
+    values[field.name] = field.type === 'checkbox' ? field.checked : field.name === 'max_positions' ? Number(field.value) : field.value || null;
   }
   return values;
 }
@@ -556,7 +559,7 @@ function renderStocks(stocks) {
   renderTable('stock-trades', rows.map((trade) => {
     const open = trade.exit_at === null;
     return [
-      [tradeLink(trade), '', `Entered ${localTime(trade.entry_at)} IST`], [setup(trade)], [trade.quantity, 'right'],
+      [tradeLink(trade), '', `Entered ${localTime(trade.entry_at)} IST`], [setup(trade)], [open ? trade.remaining_quantity ?? trade.quantity : trade.quantity, 'right'],
       [price(trade.entry), 'right'], [price(trade.stop), 'right'], [price(trade.target), 'right'],
       [price(open ? trade.mark : trade.exit), 'right'],
       [open ? closeButton(trade) : `${label(trade.exit_reason)} ${localTime(trade.exit_at)}`],

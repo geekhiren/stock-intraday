@@ -146,8 +146,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if self.chart is None:
                     raise ValueError("Trade charts are off in this session.")
                 self._json(200, self.chart(int(parse_qs(urlsplit(self.path).query)["trade_id"][0])))
-            except (ValueError, KeyError, IndexError) as exc:
-                self._json(400, {"error": str(exc) if isinstance(exc, ValueError) and not isinstance(exc, UnicodeError) else "Malformed request."})
+            except (ValueError, RequestError, KeyError, IndexError) as exc:
+                self._json(400, {"error": str(exc) if isinstance(exc, (ValueError, RequestError)) and not isinstance(exc, UnicodeError) else "Malformed request."})
             except DatabaseError:
                 self._json(503, {"error": "The paper journal is unavailable."})
         elif self.path == "/api/status":
@@ -186,10 +186,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             result = self.stocks.apply_settings(body)
             record("Settings", "Changed " + ", ".join(f"{key} to {value}" for key, value in body.items()))
             return result
-        if self.path == "/api/stock-entry":
-            refusal = self.stocks.manual_entry(body["symbol"].strip().upper(), body["side"], self.clock())
-        else:
-            refusal = self.stocks.manual_exit(int(body["trade_id"]), self.clock())
+        if self.path == "/api/stock-exit":
+            trade_id = int(body["trade_id"])
+            refusal = self.stocks.manual_exit(trade_id, self.clock())
+            if refusal:
+                raise ValueError(refusal)
+            return {"ok": True, "remaining_quantity": self.stocks.trade(trade_id)["remaining_quantity"]}
+        refusal = self.stocks.manual_entry(body["symbol"].strip().upper(), body["side"], self.clock())
         if refusal:
             raise ValueError(refusal)
         return {"ok": True}

@@ -1,5 +1,5 @@
 """Strategy 2: Breakout from a tight range."""
-from .common import Day, Plan, average
+from .common import Day, Plan, _offset, average
 
 NAME = "Range breakout"
 RULES = """
@@ -18,6 +18,8 @@ def plans(day: Day) -> list[Plan]:
     bars = day.bars(15)
     for index in range(LOOKBACK, len(bars)):
         window, bar = bars[index - LOOKBACK:index], bars[index]
+        if _offset(bar.clock) - _offset(window[0].clock) != 15 * LOOKBACK:
+            continue
         high, low = max(item.high for item in window), min(item.low for item in window)
         if (high - low) / low * 100 > MAX_RANGE_PCT or bar.volume < VOLUME_MULTIPLE * average(item.volume for item in window):
             continue

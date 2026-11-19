@@ -10,8 +10,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from decimal import Decimal
+from itertools import groupby
 
 from orderbot.core.config import Config
+from orderbot.core.ist_time import parse_timestamp
 from orderbot.strategy.stock_paper import intraday_charges
 
 TICK = 0.05
@@ -73,31 +75,35 @@ def _offset(clock: str) -> int:
 
 def _aggregate(minutes: list[Bar], size: int) -> list[Bar]:
     out: list[Bar] = []
-    slots: list[int] = []
-    for index, bar in enumerate(minutes):
-        slot = _offset(bar.clock) // size
-        if slots and slots[-1] == slot:
-            last = out[-1]
-            out[-1] = Bar(bar.clock, last.open, max(last.high, bar.high), min(last.low, bar.low), bar.close, last.volume + bar.volume, index)
-        else:
-            out.append(Bar(bar.clock, bar.open, bar.high, bar.low, bar.close, bar.volume, index))
-            slots.append(slot)
-    return [bar for bar in out if _offset(bar.clock) % size == size - 1]  # completed bars only
+    for slot, group in groupby(minutes, key=lambda bar: _offset(bar.clock) // size):
+        bars = list(group)
+        expected = list(range(slot * size, (slot + 1) * size))
+        if [_offset(bar.clock) for bar in bars] != expected:
+            continue
+        first, last = bars[0], bars[-1]
+        out.append(Bar(last.clock, first.open, max(bar.high for bar in bars), min(bar.low for bar in bars),
+                       last.close, sum(bar.volume for bar in bars), last.end))
+    return out
 
 
 def build_days(rows: list, sizes=(1, 5, 15)) -> list[Day]:
     """rows: SmartAPI one-minute candles [timestamp, open, high, low, close, volume], oldest first."""
     days: list[Day] = []
-    for stamp, opened, high, low, close, volume in rows:
-        if not days or days[-1].date != stamp[:10]:
-            days.append(Day(stamp[:10], [], days[-1].minutes[-1].close if days else None, list(days)))
+    for at, opened, high, low, close, volume in sorted(
+            ((parse_timestamp(stamp), *values) for stamp, *values in rows), key=lambda item: item[0]):
+        clock = at.strftime("%H:%M")
+        if at.second or at.microsecond or not "09:15" <= clock < "15:30":
+            continue
+        day = at.date().isoformat()
+        if not days or days[-1].date != day:
+            days.append(Day(day, [], days[-1].minutes[-1].close if days else None, list(days)))
         minutes = days[-1].minutes
-        minutes.append(Bar(stamp[11:16], float(opened), float(high), float(low), float(close), int(volume), len(minutes)))
+        minutes.append(Bar(clock, float(opened), float(high), float(low), float(close), int(volume), len(minutes)))
     for size in sizes:
         gain = loss = previous = None
         count = 0
         for day in days:
-            bars = _aggregate(day.minutes, size) if size > 1 else list(day.minutes)
+            bars = _aggregate(day.minutes, size)
             with_rsi = []
             for bar in bars:
                 rsi = None
@@ -120,6 +126,9 @@ def build_days(rows: list, sizes=(1, 5, 15)) -> list[Day]:
 def simulate(days: list[Day], plans, config: Config, *, risk: float | None = None, slot: float | None = None) -> list[dict]:
     """Run `plans(day)` on every day and return one dict per completed trade."""
     stocks = config.stocks
+    if (risk is None and (stocks.capital_inr is None or stocks.risk_per_trade_pct is None)) or (
+            slot is None and stocks.capital_inr is None):
+        raise ValueError("Set stock paper capital and risk per trade or pass an explicit simulation budget.")
     risk = float(stocks.capital_inr * stocks.risk_per_trade_pct / 100) if risk is None else risk
     slot = float(stocks.capital_inr / stocks.max_positions) if slot is None else slot
     trades = []

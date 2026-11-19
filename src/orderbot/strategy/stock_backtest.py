@@ -28,6 +28,8 @@ def backtest(config: Config, candles: dict[str, list], first_day: date) -> dict:
 
     Days before `first_day` only supply the previous close and the 14-session baselines.
     """
+    if config.stocks.capital_inr is None or config.stocks.risk_per_trade_pct is None:
+        raise ValueError("Set stock paper capital and risk per trade before running a backtest.")
     universe = {str(index): symbol for index, symbol in enumerate(sorted(candles))}
     minutes: dict = {}
     for token, symbol in universe.items():
@@ -54,7 +56,8 @@ def backtest(config: Config, candles: dict[str, list], first_day: date) -> dict:
                 if item["previous"] is None or not item["volume"]:
                     continue
                 quotes.append({
-                    "symbolToken": token, "ltp": close, "open": item["open"], "high": item["high"], "low": item["low"],
+                    "symbolToken": token, "exchFeedTime": (at + timedelta(minutes=1)).isoformat(),
+                    "ltp": close, "open": item["open"], "high": item["high"], "low": item["low"],
                     "close": item["previous"], "avgPrice": item["value"] / item["volume"], "tradeVolume": item["volume"],
                     "depth": {"buy": [{"price": close - TICK, "quantity": DEPTH}], "sell": [{"price": close, "quantity": DEPTH}]},
                 })
@@ -81,7 +84,8 @@ def backtest(config: Config, candles: dict[str, list], first_day: date) -> dict:
                     bid, ask = (exit_price, exit_price + TICK) if direction > 0 else (exit_price - TICK, exit_price)
                     item = state[trade["token"]]
                     trader.manage([{
-                        "symbolToken": trade["token"], "ltp": price, "open": item["open"], "high": item["high"], "low": item["low"],
+                        "symbolToken": trade["token"], "exchFeedTime": (at + timedelta(seconds=30)).isoformat(),
+                        "ltp": price, "open": item["open"], "high": item["high"], "low": item["low"],
                         "close": item["previous"], "avgPrice": item["value"] / item["volume"], "tradeVolume": item["volume"],
                         "depth": {"buy": [{"price": bid, "quantity": DEPTH}], "sell": [{"price": ask, "quantity": DEPTH}]},
                     }], universe, at + timedelta(seconds=30))

@@ -13,7 +13,7 @@ from orderbot.core.config import DataConfig
 from orderbot.core.ist_time import as_ist, parse_timestamp
 from orderbot.data.candle_builder import Candle, minute_floor
 
-from .angel_client import RequestError
+from .angel_client import RateLimitError, RequestError
 
 
 class HistoryError(ValueError):
@@ -77,6 +77,8 @@ class HistoryCache:
         for attempt in range(self.config.history_attempts):
             try:
                 rows = fetch()
+            except RateLimitError:
+                raise
             except RequestError as exc:
                 if not exc.retryable or attempt + 1 == self.config.history_attempts:
                     raise HistoryError(str(exc)) from None

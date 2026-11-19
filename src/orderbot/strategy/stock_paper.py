@@ -11,12 +11,14 @@ from datetime import date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 import json
 from pathlib import Path
+import re
+from threading import RLock
 
 from pydantic import ValidationError
 
 from orderbot.core.atomic_file import atomic_path
 from orderbot.core.config import Config, StocksConfig
-from orderbot.core.ist_time import as_ist, from_storage, to_storage
+from orderbot.core.ist_time import IST, as_ist, from_storage, parse_timestamp, to_storage
 from orderbot.core.money import PAISA, round_inr
 from orderbot.core.state_store import open_store
 from orderbot.data.indicators import WilderAverage
@@ -31,15 +33,20 @@ SETTING_KEYS = ("capital_inr", "risk_per_trade_pct", "max_positions", "sip_entri
                 "exit_on_vwap_cross", "watchlist_only")
 MAX_RISK_PCT = Decimal("2")  # the Settings screen cannot raise risk per trade beyond this
 MAX_SAMPLE_GAP = timedelta(seconds=150)
+EXCHANGE_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
 
 def intraday_charges(buy: Decimal, sell: Decimal, quantity: int, config: Config) -> Decimal:
     """Equity intraday round-trip charges, each line rounded half-up to a paisa."""
+    return _stock_charges([buy * quantity], [sell * quantity], config)
+
+
+def _stock_charges(buys: list[Decimal], sells: list[Decimal], config: Config) -> Decimal:
     costs, stocks = config.costs, config.stocks
-    buy_value, sell_value = buy * quantity, sell * quantity
+    buy_value, sell_value = sum(buys), sum(sells)
     turnover = buy_value + sell_value
     brokerage = sum(min(costs.brokerage_per_order_inr, max(stocks.brokerage_min_inr, value * stocks.brokerage_rate))
-                    for value in (buy_value, sell_value))
+                    for value in buys + sells)
     exchange, sebi = turnover * stocks.exchange_including_ipft_rate, turnover * costs.sebi_rate
     return sum(round_inr(line) for line in (
         brokerage, sell_value * stocks.stt_sell_rate, exchange, sebi, buy_value * costs.stamp_buy_rate,
@@ -129,22 +136,56 @@ class Tick:
     previous_close: Decimal
     vwap: Decimal
     volume: int
-    bid: Decimal
-    ask: Decimal
-    bid_quantity: int
-    ask_quantity: int
+    at: datetime
+    bids: tuple[tuple[Decimal, int], ...]
+    asks: tuple[tuple[Decimal, int], ...]
+
+    @property
+    def bid(self) -> Decimal:
+        return self.bids[0][0]
+
+    @property
+    def ask(self) -> Decimal:
+        return self.asks[0][0]
+
+    @property
+    def bid_quantity(self) -> int:
+        return self.bids[0][1]
+
+    @property
+    def ask_quantity(self) -> int:
+        return self.asks[0][1]
 
     @classmethod
     def parse(cls, quote: dict, universe: dict[str, str]) -> "Tick":
         number = lambda key: Decimal(str(quote[key]))  # noqa: E731
-        bid, ask = quote["depth"]["buy"][0], quote["depth"]["sell"][0]
+        stamp = quote["exchFeedTime"]
+        try:
+            at = parse_timestamp(stamp)
+        except ValueError:
+            match = re.fullmatch(r"([0-9]{2})-([A-Za-z]{3})-([0-9]{4}) ([0-9]{2}):([0-9]{2}):([0-9]{2})", stamp)
+            if match is None:
+                raise ValueError("Unusable SmartAPI exchange feed timestamp.") from None
+            day, month, year, hour, minute, second = match.groups()
+            at = datetime(int(year), EXCHANGE_MONTHS.index(month.title()) + 1, int(day),
+                          int(hour), int(minute), int(second), tzinfo=IST)
         tick = cls(quote["symbolToken"], universe[quote["symbolToken"]], number("ltp"), number("open"), number("high"),
                    number("low"), number("close"), number("avgPrice"), int(quote["tradeVolume"]),
-                   Decimal(str(bid["price"])), Decimal(str(ask["price"])), int(bid["quantity"]), int(ask["quantity"]))
-        prices = (tick.ltp, tick.open, tick.low, tick.previous_close, tick.vwap, tick.bid)
-        if not all(price.is_finite() and price > 0 for price in prices) or not tick.high >= tick.low or not tick.ask > tick.bid:
+                   at, cls._levels(quote["depth"]["buy"], True), cls._levels(quote["depth"]["sell"], False))
+        prices = (tick.ltp, tick.open, tick.high, tick.low, tick.previous_close, tick.vwap)
+        if (not all(price.is_finite() and price > 0 for price in prices) or tick.high < tick.low
+                or not (tick.bids or tick.asks) or (tick.bids and tick.asks and tick.ask <= tick.bid)):
             raise ValueError("Unusable quote.")
         return tick
+
+    @staticmethod
+    def _levels(rows, descending):
+        levels = {}
+        for row in rows:
+            price, quantity = Decimal(str(row["price"])), int(row["quantity"])
+            if price.is_finite() and price > 0 and quantity > 0:
+                levels[price] = min(levels.get(price, quantity), quantity)
+        return tuple(sorted(levels.items(), reverse=descending))
 
 
 class _Series:
@@ -185,6 +226,7 @@ class StockPaperTrader:
             except (OSError, ValueError):
                 pass  # an unreadable or outdated file falls back to config.yaml
         self.status = "Waiting for the first scan"
+        self._lock = RLock()
         self._series: dict[str, _Series] = {}
         self._marks: dict[str, Decimal] = {}
         self._ticks: dict[str, Tick] = {}
@@ -211,13 +253,13 @@ class StockPaperTrader:
             stocks = StocksConfig.model_validate(self._base.stocks.model_dump() | overrides)
         except ValidationError as exc:
             raise ValueError("; ".join(f"{error['loc'][0]}: {error['msg']}" for error in exc.errors())) from None
-        if stocks.risk_per_trade_pct > MAX_RISK_PCT:
+        if stocks.risk_per_trade_pct is not None and stocks.risk_per_trade_pct > MAX_RISK_PCT:
             raise ValueError(f"Risk per trade is limited to {MAX_RISK_PCT}% of capital.")
         return self._base.model_copy(update={"stocks": stocks})
 
     def settings(self) -> dict:
         def values(stocks):
-            return {key: value if isinstance(value, (bool, int)) else str(value)
+            return {key: value if value is None or isinstance(value, (bool, int)) else str(value)
                     for key in SETTING_KEYS for value in [getattr(stocks, key)]}
         return {"values": values(self.config.stocks), "defaults": values(self._base.stocks), "max_risk_pct": str(MAX_RISK_PCT)}
 
@@ -228,49 +270,75 @@ class StockPaperTrader:
         if self.settings_path is not None:
             with atomic_path(self.settings_path) as temporary:
                 temporary.write_text(json.dumps(self._with_values(config)), encoding="utf-8")
-        self.config = config
+        with self._lock:
+            self.config = config
         return self.settings()
 
     @staticmethod
     def _with_values(config: Config) -> dict:
-        return {key: value if isinstance(value, (bool, int)) else str(value)
+        return {key: value if value is None or isinstance(value, (bool, int)) else str(value)
                 for key in SETTING_KEYS for value in [getattr(config.stocks, key)]}
 
     # -- per-scan entry point -------------------------------------------------------------------
+    def invalidate_quotes(self, *, require_flat: bool = False) -> None:
+        with self._lock:
+            if require_flat and self.held():
+                raise ValueError("Close the open paper position first. It needs live prices to reach its stop or target.")
+            self._ticks.clear()
+            self._marks.clear()
+            self._series.clear()
+            self._last_at = None
+
+    def _session_open(self, at: datetime) -> bool:
+        market = self.config.market
+        return at.weekday() < 5 and market.session_open <= at.time() <= market.session_close
+
+    def _fresh(self, tick: Tick | None, now: datetime) -> bool:
+        return (tick is not None and self._session_open(now) and self._session_open(tick.at)
+                and tick.at.date() == now.date()
+                and timedelta(0) <= now - tick.at <= timedelta(seconds=self.config.stocks.max_quote_age_seconds))
+
     def on_scan(self, quotes, universe: dict[str, str], at: datetime) -> None:
-        now, ticks = as_ist(at), self._parse(quotes, universe)
-        self._names = universe  # token -> symbol, also for stocks with no usable quote right now
-        if self._first_scan is None or self._first_scan.date() != now.date():
-            self._first_scan = now
-        if self._last_at is None or now.date() != self._last_at.date() or now - self._last_at > MAX_SAMPLE_GAP:
-            self._series.clear()  # a gap would corrupt minute-based volume, RSI and crossover checks
-        self._last_at, self._ticks = now, ticks
-        for tick in ticks.values():
-            self._series.setdefault(tick.token, _Series(self.config)).add(tick)
-            self._marks[tick.token] = tick.ltp
-        with open_store(self.db) as connection:
+        with self._lock, open_store(self.db) as connection:
+            now = as_ist(at)
+            ticks = self._parse(quotes, universe, now)
+            self._names = universe
+            if self._session_open(now) and (self._first_scan is None or self._first_scan.date() != now.date()):
+                self._first_scan = now
+            if self._last_at is None or now.date() != self._last_at.date() or now - self._last_at > MAX_SAMPLE_GAP:
+                self._series.clear()
+            self._last_at, self._ticks = now, ticks
+            for tick in ticks.values():
+                self._series.setdefault(tick.token, _Series(self.config)).add(tick)
+                self._marks[tick.token] = tick.ltp
             connection.execute("BEGIN IMMEDIATE")
             day, halted, square_off = self._exits(connection, ticks, now, signals=True)
+            ticks = {token: tick for token, tick in ticks.items() if tick.bids and tick.asks}
             if self.config.stocks.watchlist_only:  # entries only in today's watchlist; none until it is ready
                 names = {row["symbol"] for row in self.watchlist} if self._baseline_day == now.date() else set()
                 ticks = {token: tick for token, tick in ticks.items() if tick.symbol in names}
             self.status = self._enter(connection, ticks, now, day, halted, square_off)
 
-    @staticmethod
-    def _parse(quotes, universe: dict[str, str]) -> dict[str, Tick]:
+    def _parse(self, quotes, universe: dict[str, str], now: datetime) -> dict[str, Tick]:
         ticks = {}
         for quote in quotes:
             try:
                 tick = Tick.parse(quote, universe)
             except (KeyError, IndexError, TypeError, ValueError, InvalidOperation):
                 continue
-            ticks[tick.token] = tick
+            previous = ticks.get(tick.token) or self._ticks.get(tick.token)
+            if self._fresh(tick, now) and (previous is None or tick.at >= previous.at):
+                ticks[tick.token] = tick
         return ticks
 
     def trade(self, trade_id: int) -> dict | None:
         """One paper trade as stored, for the trade detail view."""
         with open_store(self.db) as connection:
-            row = connection.execute("SELECT * FROM stock_trades WHERE trade_id=?", (trade_id,)).fetchone()
+            row = connection.execute("""
+                SELECT *, CASE WHEN exit_at_utc IS NOT NULL THEN 0 ELSE quantity - COALESCE((
+                    SELECT SUM(quantity) FROM stock_exit_fills f WHERE f.trade_id=stock_trades.trade_id
+                ), 0) END AS remaining_quantity FROM stock_trades WHERE trade_id=?
+            """, (trade_id,)).fetchone()
         return dict(row) if row else None
 
     def held(self) -> list[dict]:
@@ -281,11 +349,12 @@ class StockPaperTrader:
 
     def manage(self, quotes, universe: dict[str, str], at: datetime) -> None:
         """Check open positions against fresh quotes between full scans. It never opens a position."""
-        now, ticks = as_ist(at), self._parse(quotes, universe)
-        self._ticks = self._ticks | ticks
-        for tick in ticks.values():
-            self._marks[tick.token] = tick.ltp
-        with open_store(self.db) as connection:
+        with self._lock, open_store(self.db) as connection:
+            now = as_ist(at)
+            ticks = self._parse(quotes, universe, now)
+            self._ticks = {token: tick for token, tick in self._ticks.items() if self._fresh(tick, now)} | ticks
+            for tick in ticks.values():
+                self._marks[tick.token] = tick.ltp
             connection.execute("BEGIN IMMEDIATE")
             self._exits(connection, ticks, now)
 
@@ -302,14 +371,24 @@ class StockPaperTrader:
 
     # -- exits ------------------------------------------------------------------------------------
     def _manage(self, connection, trade, tick: Tick | None, now: datetime, forced: str | None, signals: bool = False) -> None:
-        if tick is None:
-            return  # no usable two-sided quote this scan; try again on the next one
+        if not self._fresh(tick, now) or tick.at < from_storage(trade["entry_at_utc"]):
+            return
+        fills = connection.execute("SELECT * FROM stock_exit_fills WHERE trade_id=? ORDER BY quote_at_utc",
+                                   (trade["trade_id"],)).fetchall()
+        quote_at = to_storage(tick.at)
+        if fills and quote_at <= fills[-1]["quote_at_utc"]:
+            return  # a restated book cannot supply more liquidity, including after a restart
         long = trade["side"] == "long"
-        price = tick.bid if long else tick.ask
+        levels = tick.bids if long else tick.asks
+        if not levels:
+            return
+        price = levels[0][0]
         direction = 1 if long else -1
-        reason = forced
+        pending = fills[-1]["reason"] if fills else None
+        reason = forced or (pending if pending in {"kill_switch", "square_off", "stop", "manual"} else None)
         if reason is None and direction * (price - Decimal(trade["stop"])) <= 0:
             reason = "stop"
+        reason = reason or pending
         if reason is None and trade["target"] and direction * (price - Decimal(trade["target"])) >= 0:
             reason = "target"
         if reason is None and signals:
@@ -321,13 +400,36 @@ class StockPaperTrader:
                 reason = "vwap_cross"  # price is back on the wrong side of the day's average
         if reason is None:
             return
-        entry, quantity = Decimal(trade["entry_price"]), trade["quantity"]
-        buy, sell = (entry, price) if long else (price, entry)
-        charges = intraday_charges(buy, sell, quantity, self.config)
-        net = round_inr((sell - buy) * quantity - charges)
+        quantity = trade["quantity"]
+        remaining = quantity - sum(fill["quantity"] for fill in fills)
+        filled, value_paise = 0, 0
+        limit = Decimal(trade["target"]) if reason == "target" else None
+        for level, available in levels:
+            if limit is not None and direction * (level - limit) < 0:
+                break
+            take = min(remaining - filled, available)
+            filled += take
+            value_paise += int(round_inr(level) / PAISA) * take
+            if filled == remaining:
+                break
+        if not filled:
+            return
+        connection.execute("INSERT INTO stock_exit_fills VALUES (?, ?, ?, ?, ?)",
+                           (trade["trade_id"], quote_at, filled, value_paise, reason))
+        if filled < remaining:
+            if self.activity:
+                self.activity("Paper trader", f"Partially closed {trade['symbol']} · {remaining - filled} shares still open")
+            return
+        exit_orders = [fill["value_paise"] * PAISA for fill in fills] + [value_paise * PAISA]
+        exit_value = sum(exit_orders)
+        entry_value = Decimal(trade["entry_price"]) * quantity
+        buy, sell = ([entry_value], exit_orders) if long else (exit_orders, [entry_value])
+        charges = _stock_charges(buy, sell, self.config)
+        net = round_inr(sum(sell) - sum(buy) - charges)
+        price = round_inr(exit_value / quantity)
         connection.execute("""
             UPDATE stock_trades SET exit_at_utc=?, exit_price=?, exit_reason=?, charges_paise=?, net_paise=? WHERE trade_id=?
-        """, (to_storage(now), str(round_inr(price)), reason, int(charges / PAISA), int(net / PAISA), trade["trade_id"]))
+        """, (to_storage(now), str(price), reason, int(charges / PAISA), int(net / PAISA), trade["trade_id"]))
         queue_alert(connection, f"stock_exit:{trade['trade_id']}", "stock_exit", f"stock-{trade['trade_id']}", now,
                     {"symbol": trade["symbol"], "reason": reason, "net_inr": str(net)})
         if self.activity:
@@ -351,8 +453,9 @@ class StockPaperTrader:
         plays, play_status = self._plays(connection, ticks, now, day, opening) if stocks.sip_entries else ([], None)
 
         trades = connection.execute("SELECT * FROM stock_trades WHERE session_day=? ORDER BY trade_id", (day,)).fetchall()
+        open_positions = connection.execute("SELECT token, session_day FROM stock_trades WHERE exit_at_utc IS NULL").fetchall()
         closed = [trade for trade in trades if trade["exit_at_utc"]]
-        held = {trade["token"] for trade in trades if not trade["exit_at_utc"]}
+        held = {trade["token"] for trade in open_positions}
         losses = 0
         for trade in reversed(closed):
             if trade["net_paise"] >= 0:
@@ -367,8 +470,16 @@ class StockPaperTrader:
             return "Stopped for today · Stop trading pressed"
         if square_off:
             return "Square-off time passed · No new entries"
-        if len(held) >= stocks.max_positions:
+        if any(trade["session_day"] != day for trade in open_positions):
+            return "Unresolved overnight position · No new entries"
+        if not self._session_open(now):
+            return "Outside market hours · No new entries"
+        if len(open_positions) >= stocks.max_positions:
             return managing()
+        if self._has_partial_exit(connection):
+            return "Paper exit pending · No new entries"
+        if stocks.capital_inr is None or stocks.risk_per_trade_pct is None:
+            return managing() if held else "Set stock paper capital and risk per trade to enable new entries"
         if net <= -stocks.capital_inr * risk.daily_loss_limit_pct / 100:
             return "Stopped for today · Daily loss limit reached"
         if losses >= risk.max_consecutive_losses:
@@ -400,6 +511,13 @@ class StockPaperTrader:
                 held.add(item.tick.token)
                 entries += 1
         return managing() if held else play_status or status
+
+    @staticmethod
+    def _has_partial_exit(connection) -> bool:
+        return connection.execute("""
+            SELECT 1 FROM stock_trades JOIN stock_exit_fills USING (trade_id)
+            WHERE exit_at_utc IS NULL LIMIT 1
+        """).fetchone() is not None
 
     def _plays(self, connection, ticks, now: datetime, day: str, opening: datetime) -> tuple[list[_Candidate], str | None]:
         """Stocks in play: after the opening range, the stocks with the highest relative opening volume are
@@ -474,22 +592,31 @@ class StockPaperTrader:
     # -- manual paper trades from the dashboard ---------------------------------------------------
     def manual_entry(self, symbol: str, side: str, at: datetime) -> str | None:
         """Paper-enter `symbol` at the last scanned quote. Returns None when booked, otherwise why not."""
-        now, cfg = as_ist(at), self.config
-        tick = next((tick for tick in self._ticks.values() if tick.symbol == symbol), None)
-        if side not in {"long", "short"} or tick is None or self._last_at is None or now - self._last_at > MAX_SAMPLE_GAP:
-            return "No fresh quote for that stock. Use an F&O stock symbol such as HDFCBANK during market hours."
-        with open_store(self.db) as connection:
+        now = as_ist(at)
+        with self._lock, open_store(self.db) as connection:
+            cfg = self.config
+            tick = next((tick for tick in self._ticks.values() if tick.symbol == symbol), None)
+            if side not in {"long", "short"} or not self._fresh(tick, now):
+                return "No fresh quote for that stock. Use an F&O stock symbol such as HDFCBANK during market hours."
+            if not (tick.bids and tick.asks):
+                return "A two-sided quote is required to enter."
             connection.execute("BEGIN IMMEDIATE")
             day = now.date().isoformat()
             if connection.execute("SELECT 1 FROM kill_switch_latches WHERE session_day=?", (day,)).fetchone():
                 return "Stop trading was pressed today."
             if now.time() >= cfg.exits.square_off_time:
                 return "It is past the square-off time."
-            held = [row[0] for row in connection.execute("SELECT token FROM stock_trades WHERE exit_at_utc IS NULL")]
-            if tick.token in held:
+            held = connection.execute("SELECT token, session_day FROM stock_trades WHERE exit_at_utc IS NULL").fetchall()
+            if any(trade["session_day"] != day for trade in held):
+                return "An overnight position needs to close before any new entry."
+            if any(trade["token"] == tick.token for trade in held):
                 return f"{symbol} already has an open position."
             if len(held) >= cfg.stocks.max_positions:
                 return "All position slots are in use. Close one first."
+            if self._has_partial_exit(connection):
+                return "A paper exit is pending. Close it before entering another trade."
+            if cfg.stocks.capital_inr is None or cfg.stocks.risk_per_trade_pct is None:
+                return "Set stock paper capital and risk per trade before entering."
             net = connection.execute("SELECT COALESCE(SUM(net_paise), 0) FROM stock_trades WHERE session_day=?", (day,)).fetchone()[0]
             if net * PAISA <= -cfg.stocks.capital_inr * cfg.risk.daily_loss_limit_pct / 100:
                 return "The daily loss limit is reached."
@@ -502,13 +629,16 @@ class StockPaperTrader:
             return refusal
 
     def manual_exit(self, trade_id: int, at: datetime) -> str | None:
-        with open_store(self.db) as connection:
+        now = as_ist(at)
+        with self._lock, open_store(self.db) as connection:
             connection.execute("BEGIN IMMEDIATE")
             trade = connection.execute("SELECT * FROM stock_trades WHERE trade_id=? AND exit_at_utc IS NULL", (trade_id,)).fetchone()
             tick = self._ticks.get(trade["token"]) if trade else None
-            if tick is None:
+            if not self._fresh(tick, now):
                 return "No open position with a fresh quote to close."
-            self._manage(connection, trade, tick, as_ist(at), "manual")
+            if not (tick.bids if trade["side"] == "long" else tick.asks):
+                return "The exit side has no displayed liquidity."
+            self._manage(connection, trade, tick, now, "manual")
         return None
 
     def _breakouts(self, connection, ticks, day: str) -> list[_Candidate]:
@@ -563,6 +693,8 @@ class StockPaperTrader:
         if latch is not None:
             reasons.append(f"Stop trading was pressed at {from_storage(latch['at_utc']):%H:%M} IST, which blocks every entry for the day."
                            if latch["reason"] == "dashboard_stop" else f"A safety stop is on for today ({latch['reason'].replace('_', ' ')}).")
+        if stocks.capital_inr is None or stocks.risk_per_trade_pct is None:
+            return reasons + ["Stock paper capital or risk per trade is unset."]
         if now < scan_at:
             return reasons + [f"Trading starts after the {scan_at:%H:%M} stocks-in-play scan."]
         if stocks.sip_entries:
@@ -595,6 +727,12 @@ class StockPaperTrader:
         with open_store(self.db) as connection:
             rows = connection.execute("SELECT * FROM stock_trades WHERE session_day=? OR exit_at_utc IS NULL ORDER BY trade_id",
                                       (now.date().isoformat(),)).fetchall()
+            partial = {row["trade_id"]: row for row in connection.execute("""
+                SELECT trade_id, SUM(stock_exit_fills.quantity) AS quantity, (
+                    SELECT reason FROM stock_exit_fills f WHERE f.trade_id=trade.trade_id ORDER BY quote_at_utc DESC LIMIT 1
+                ) AS reason FROM stock_exit_fills JOIN stock_trades trade USING (trade_id)
+                WHERE trade.exit_at_utc IS NULL GROUP BY trade_id
+            """)}
             stats = strategy_stats(connection)
             today = now.date()
             periods = []
@@ -616,8 +754,17 @@ class StockPaperTrader:
 
         def view(row):
             mark = self._marks.get(row["token"])
+            fills = partial.get(row["trade_id"])
+            pending = fills["reason"] if fills else None
+            if not row["exit_at_utc"]:
+                if latch:
+                    pending = "kill_switch"
+                elif row["session_day"] != now.date().isoformat() or now.time() >= self.config.exits.square_off_time:
+                    pending = "square_off"
             return {
                 "trade_id": row["trade_id"], "symbol": row["symbol"], "strategy": row["strategy"], "side": row["side"], "quantity": row["quantity"],
+                "remaining_quantity": 0 if row["exit_at_utc"] else row["quantity"] - (fills["quantity"] if fills else 0),
+                "pending_exit_reason": pending,
                 "entry_at": from_storage(row["entry_at_utc"]).isoformat(), "entry": row["entry_price"],
                 "stop": row["stop"], "target": row["target"] or None, "mark": str(mark) if mark is not None else None,
                 "exit_at": from_storage(row["exit_at_utc"]).isoformat() if row["exit_at_utc"] else None,
@@ -644,9 +791,11 @@ class StockPaperTrader:
             play_note = "No stock had above-normal opening volume today."
         changes = {tick.symbol: float(round(100 * (tick.ltp / tick.previous_close - 1), 2)) for tick in self._ticks.values()}
         return {
-            "status": self.status, "capital_paise": int(stocks.capital_inr / PAISA),
-            "risk_paise": int(stocks.capital_inr * stocks.risk_per_trade_pct / 100 / PAISA),
-            "loss_limit_paise": int(stocks.capital_inr * self.config.risk.daily_loss_limit_pct / 100 / PAISA),
+            "status": self.status, "capital_paise": int(stocks.capital_inr / PAISA) if stocks.capital_inr is not None else None,
+            "risk_paise": int(stocks.capital_inr * stocks.risk_per_trade_pct / 100 / PAISA)
+            if stocks.capital_inr is not None and stocks.risk_per_trade_pct is not None else None,
+            "loss_limit_paise": int(stocks.capital_inr * self.config.risk.daily_loss_limit_pct / 100 / PAISA)
+            if stocks.capital_inr is not None else None,
             "net_paise": sum(trade["net_paise"] for trade in closed),
             "open": [view(row) for row in rows if not row["exit_at_utc"]], "trades": closed, "stats": stats, "curve": curve,
             "periods": periods, "plays": plays, "play_note": play_note, "settings": self.settings(),

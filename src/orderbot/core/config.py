@@ -168,7 +168,7 @@ class CostConfig(Section):
 
 
 class StocksConfig(Section):
-    """Paper intraday trading of F&O stocks. Its capital is separate from the unset option risk inputs."""
+    """Paper intraday trading of F&O stocks, with an independent optional budget."""
     paper_trading: Annotated[bool, Field(strict=True)]
     vwap_entries: Annotated[bool, Field(strict=True)]
     sip_entries: Annotated[bool, Field(strict=True)]
@@ -182,8 +182,9 @@ class StocksConfig(Section):
     exit_on_vwap_cross: Annotated[bool, Field(strict=True)]
     watchlist_size: PositiveCount
     watchlist_only: Annotated[bool, Field(strict=True)]
-    capital_inr: PositiveDecimal
-    risk_per_trade_pct: PositivePercentage
+    capital_inr: PositiveDecimal | None
+    risk_per_trade_pct: PositivePercentage | None
+    max_quote_age_seconds: PositiveSeconds
     min_stop_pct: PositivePercentage
     max_stop_pct: PositivePercentage
     max_spread_fraction: TurnoverRate
@@ -355,6 +356,8 @@ class BrokerConfig(Section):
     base_url: Literal["https://apiconnect.angelone.in"]
     timeout_seconds: Annotated[FiniteFloat, Field(strict=True, gt=0)]
     rest_max_requests_per_second: Annotated[FiniteFloat, Field(strict=True, gt=0, le=1)]
+    rest_quote_token_limit: Annotated[int, Field(strict=True, ge=1, le=50)]
+    rest_rate_limit_cooldown_seconds: PositiveSeconds
     api_key_env: EnvName
     client_code_env: EnvName
     mpin_env: EnvName

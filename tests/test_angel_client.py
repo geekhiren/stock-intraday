@@ -7,7 +7,7 @@ import pytest
 import requests
 
 from orderbot.broker import angel_client
-from orderbot.broker.angel_client import AngelClient, LoginError, read_credentials
+from orderbot.broker.angel_client import AngelClient, LoginError, RequestError, Session, read_credentials
 from orderbot.core.config import load_config
 
 
@@ -146,3 +146,31 @@ def test_consecutive_login_calls_obey_configured_spacing(broker, credential_envi
     client.login(credentials)
     client.login(credentials)
     sleep.assert_called_once_with(rate_fixture["expected_sleep"])
+
+
+@pytest.mark.parametrize("status", [403, 429, 200])
+def test_cooldown_shared_between_clients_and_endpoints(broker, credential_environment, tmp_path, monkeypatch, status):
+    duration = json.loads((ROOT / "tests/fixtures/paper_safety.json").read_text())["retry_after_seconds"]
+    at = datetime.fromisoformat(TOTP["instant"])
+    epoch = [at.timestamp()]
+    monkeypatch.setattr(angel_client, "time", lambda: epoch[0])
+    first_transport, next_transport = Mock(), Mock()
+    refusal, success = first_transport.post.return_value, next_transport.post.return_value
+    refusal.status_code, refusal.headers = status, {"Retry-After": str(duration)}
+    refusal.json.return_value = {"status": False, "errorcode": "AB1021"}
+    success.status_code, success.headers = 200, {}
+    success.json.return_value = {"status": True, "data": {"fetched": []}}
+    db = tmp_path / "rest.sqlite3"
+    first = AngelClient(broker, transport=first_transport, rest_state_path=db)
+    following = AngelClient(broker, transport=next_transport, rest_state_path=db)
+    credentials = read_credentials(broker, credential_environment)
+    session = Session("jwt", "refresh", "feed")
+    with pytest.raises(RequestError, match="cooldown"):
+        first.historical_minutes(credentials, session, "NSE", "1", at, at)
+    epoch[0] += duration - 1
+    with pytest.raises(RequestError, match="cooldown"):
+        following.quotes(credentials, session, "NSE", ["1"])
+    next_transport.post.assert_not_called()
+    epoch[0] += 1
+    assert following.quotes(credentials, session, "NSE", ["1"]) == []
+    next_transport.post.assert_called_once()
