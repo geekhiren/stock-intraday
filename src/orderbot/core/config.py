@@ -332,8 +332,24 @@ class BrokerConfig(Section):
     mac_address_env: EnvName
 
 
+class PaperTrialConfig(Section):
+    duration_minutes: PositiveCount
+    finalize_delay_seconds: PositiveSeconds
+    history_poll_seconds: PositiveSeconds
+    broker_candle_max_age_seconds: PositiveSeconds
+    quote_window_wings: PositiveCount
+    output_directory: Path
+
+    @model_validator(mode="after")
+    def check_confirmation_window(self):
+        if self.finalize_delay_seconds + 2 * self.history_poll_seconds >= self.broker_candle_max_age_seconds:
+            raise ValueError("The candle age limit must allow two broker reads after the finalization delay.")
+        return self
+
+
 class Config(Section):
     runtime: RuntimeConfig
+    paper_trial: PaperTrialConfig
     market: MarketConfig
     data: DataConfig
     options: OptionsConfig
@@ -352,6 +368,8 @@ class Config(Section):
 
     @model_validator(mode="after")
     def check_exit_session(self):
+        if self.paper_trial.quote_window_wings < self.options.candidate_wings:
+            raise ValueError("The trial quote window must cover the strike selection wings.")
         if not self.market.session_open < self.exits.square_off_time < self.exits.backstop_time < self.market.session_close:
             raise ValueError("Square-off and its backstop must occur within the trading session.")
         if self.reporting.daily_report_time <= self.market.session_close:

@@ -1,0 +1,7 @@
+{
+  "reference": ["2026-11-19T10:51:00+05:30", "25314.9", "25318.6", "25311.4", "25318.6", 334],
+  "stream_high_close": "25318",
+  "stream_volume_units": 21710,
+  "contract_lot_size": 65,
+  "price_tick": "0.10"
+}

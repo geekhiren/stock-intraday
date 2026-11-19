@@ -131,3 +131,9 @@ Strategy B builds the opening range from closed NIFTY near-month futures candles
 `ohl` mode gives Strategy B the morning window. At 10:00 IST, working OHL buys are cancelled and Strategy A becomes eligible only if there was no OHL fill that session. The journal preserves this rule after restart, even when the OHL position is already closed. `vwap` mode runs Strategy A only.
 
 The replay writes synthetic Snap Quote packets to a temporary Parquet archive and drives both strategies from the replayed session. The funded runs use fixture-only capital and risk to exercise fills, exits, reconciliation, the net daily report, and queued alerts. The default unfunded run exercises the risk veto. These commands require no credentials or network access. Section 18 Phase 9 calls for 30 actual paper sessions, which are still pending.
+
+## Real-data paper trial
+
+Run `python run.py --mode paper --real-paper-trial PATH_TO_NSE_FO_CALENDAR.json` during the configured session. The calendar contains an ascending `trading_sessions` array of exchange dates covering the prior session through the candidate weekly expiry. It can include `source` for the NSE circular. The trial uses the configured strategy and requires both risk inputs to be unset.
+
+The trial evaluates five minutes by default in an isolated journal. It accepts a signal candle after the post-close delay and two agreeing SmartAPI history responses. Fresh spot and option books come from the WebSocket. The risk gate blocks otherwise eligible entries with the account inputs unset. The output directory contains the raw tick archive and `report.json` with signal decisions, a later check for broker revisions, and an independent WebSocket candle comparison. The comparison converts the NIFTY futures history volume from lots to units using the listed contract size and applies the instrument tick tolerance to prices.

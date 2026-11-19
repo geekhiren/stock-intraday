@@ -12,7 +12,7 @@ from orderbot.data.replay import AnalyzedBar
 from orderbot.options.liquidity_gate import OptionQuote
 from orderbot.options.strike_selector import select_strike
 
-from .base import GateResult, Signal, StrategyDecision
+from .base import DECISION_CANDLE_SOURCES, GateResult, Signal, StrategyDecision, candle_age_limit
 from .iv_store import IVStore, nearest_rank
 from .stop_plan import Side, build_stop_plan
 
@@ -39,17 +39,17 @@ class StrategyA:
 
         def skip(gate, reason, **detail):
             gates[gate] = GateResult("fail", detail | {"reason": reason})
-            return StrategyDecision(uid, opens, now, token, gates, reason)
+            return StrategyDecision(uid, opens, now, token, gates, reason, candle_source=row.source)
 
         cfg = self.config.strategy_a
         session = TradingSession.from_config(opens.date(), self.config.market)
-        if row.source != "feed":
+        if row.source not in DECISION_CANDLE_SOURCES:
             return skip("closed_candle", "backfill_candle")
         if now < opens + MINUTE:
             return skip("closed_candle", "unclosed_candle")
         if (
             not session.opens_at <= opens < session.closes_at or now.date() != session.day
-            or (now - opens - MINUTE).total_seconds() >= self.config.data.websocket_stale_seconds
+            or (now - opens - MINUTE).total_seconds() >= candle_age_limit(self.config, row.source)
         ):
             return skip("closed_candle", "stale_candle")
         if token != self.master.front_future(session.day).token:
@@ -157,16 +157,16 @@ class StrategyA:
             gates["iv"] = GateResult("pass", iv_detail)
 
         if not _positive(row.indicators.atr):
-            return StrategyDecision(uid, opens, now, token, gates, "atr_unavailable")
+            return StrategyDecision(uid, opens, now, token, gates, "atr_unavailable", candle_source=row.source)
         projected_entry = picked.quote.asks[0].price + picked.contract.price_tick * self.config.costs.slippage_ticks
         try:
             plan = build_stop_plan(side, close, row.indicators.atr, picked.greeks.delta, projected_entry, cfg)
         except ValueError:
-            return StrategyDecision(uid, opens, now, token, gates, "stop_plan_unavailable")
+            return StrategyDecision(uid, opens, now, token, gates, "stop_plan_unavailable", candle_source=row.source)
         # Hold the observed half-spread fixed for the Phase 2 target-friction estimate.
         target_bid = plan.premium_target - picked.spread / 2
         signal = Signal(side, right, selection, plan, target_bid)
-        return StrategyDecision(uid, opens, now, token, gates, "signal", signal)
+        return StrategyDecision(uid, opens, now, token, gates, "signal", signal, candle_source=row.source)
 
 
 def entry_window(at: datetime, expiry_day: bool, config: StrategyAConfig) -> tuple[time, str | None]:

@@ -5,12 +5,13 @@ from decimal import Decimal
 from orderbot.core.ist_time import as_ist, parse_timestamp
 from orderbot.core.money import is_finite_decimal
 from orderbot.data.candle_builder import MINUTE
+from orderbot.data.indicators import PivotLevels
 from orderbot.data.replay import AnalyzedBar
 from orderbot.execution.paper_executor import ExecutionResult, PaperExecutor
 from orderbot.options.liquidity_gate import OptionQuote
 from orderbot.options.strike_selector import revalidate_selection
 
-from .base import StrategyDecision
+from .base import StrategyDecision, candle_age_limit
 from .opening_range import StrategyB
 from .precedence import ohl_filled_on
 from .vwap_rsi import StrategyA, entry_window
@@ -25,6 +26,7 @@ class SessionStrategies:
     def on_closed_candle(
         self, row: AnalyzedBar, *, at: datetime, token: str, spot: Decimal | None,
         quotes: Mapping[str, OptionQuote], previous_close: Decimal | None, opening_spot: Decimal | None,
+        pivots: PivotLevels | None = None,
     ) -> tuple[StrategyDecision, ExecutionResult]:
         now = as_ist(at)
         cfg = self.executor.config
@@ -40,12 +42,12 @@ class SessionStrategies:
             strategy = "ohl" if use_ohl else "vwap"
             reason = "ohl_trade_limit" if use_ohl else "vwap_suppressed_ohl_traded"
             decision = StrategyDecision(f"{strategy}-{token}-{row.bar.at:%Y%m%d%H%M}", row.bar.at, now,
-                                        token, {}, reason, strategy=strategy)
+                                        token, {}, reason, strategy=strategy, candle_source=row.source)
         elif use_ohl:
             decision = self.ohl.evaluate(row, self.history, at=now, token=token, spot=spot, quotes=quotes,
                                          previous_close=previous_close, opening_spot=opening_spot)
         else:
-            decision = self.vwap.evaluate(row, self.history, at=now, token=token, spot=spot, quotes=quotes)
+            decision = self.vwap.evaluate(row, self.history, at=now, token=token, spot=spot, quotes=quotes, pivots=pivots)
         self.history.append(row)
         return decision, submit_strategy_decision(decision, self.executor, spot=spot, quotes=quotes)
 
@@ -79,7 +81,7 @@ def submit_strategy_decision(
         return skip("outside_ohl_window")
     if now < decision.at or now.date() != decision.at.date() or (
         now - decision.candle_at - MINUTE
-    ).total_seconds() >= cfg.data.websocket_stale_seconds:
+    ).total_seconds() >= candle_age_limit(cfg, decision.candle_source):
         return skip("stale_candle")
     exits = (parse_timestamp(trade["closed_at"]) for trade in executor.journal.snapshot().trades)
     recent_exit = max((exit_at for exit_at in exits if exit_at.date() == now.date()), default=None)

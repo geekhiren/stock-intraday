@@ -3,6 +3,13 @@ runtime:
   live_enabled: false
   strategy: vwap
   timezone: Asia/Kolkata
+paper_trial:
+  duration_minutes: 5
+  finalize_delay_seconds: 12
+  history_poll_seconds: 4
+  broker_candle_max_age_seconds: 45
+  quote_window_wings: 8
+  output_directory: var/real-paper-trials
 market:
   underlying: NIFTY
   signal_series: near_month_futures

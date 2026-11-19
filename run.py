@@ -25,6 +25,7 @@ from orderbot.reporting.daily_report import build_report, daily_report_worker, r
 from orderbot.reporting.dashboard import make_server
 from orderbot.reporting.fixtures import seed_surface_fixture
 from orderbot.strategy.replay import replay_strategy_a
+from orderbot.strategy.real_trial import run_real_paper_trial
 from orderbot.strategy.session_replay import replay_paper_session
 
 
@@ -65,6 +66,7 @@ def main() -> int:
     action.add_argument("--replay-execution", type=Path, metavar="FIXTURE", help="Replay paper execution and restart")
     action.add_argument("--replay-strategy-a", type=Path, metavar="FIXTURE", help="Replay Strategy A against fixtures")
     action.add_argument("--replay-paper-session", type=Path, metavar="FIXTURE", help="Run an end-to-end paper fixture session")
+    action.add_argument("--real-paper-trial", type=Path, metavar="CALENDAR", help="Run an unfunded real-data paper trial")
     action.add_argument("--replay-exits", type=Path, metavar="FIXTURE", help="Drill paper exits and kill switches")
     action.add_argument("--dashboard", action="store_true", help="Serve the local paper dashboard")
     action.add_argument("--report", type=date.fromisoformat, metavar="YYYY-MM-DD", help="Report an IST session")
@@ -102,6 +104,16 @@ def main() -> int:
         if args.replay:
             print(load_replay(config, directory, args.replay).to_json())
             return 0
+        if args.real_paper_trial:
+            if args.strategy:
+                config = config.model_copy(update={"runtime": config.runtime.model_copy(update={"strategy": args.strategy})})
+            report = run_real_paper_trial(config, directory, args.real_paper_trial)
+            print(json.dumps({key: report[key] for key in (
+                "report_path", "finalized_minutes", "paper_orders", "outcome_counts", "comparison", "error",
+            ) if key in report}, indent=2))
+            passed = (report.get("comparison", {}).get("passed") and not report.get("unconfirmed_broker_minutes")
+                      and not report.get("broker_revisions_after_signal") and not report.get("error"))
+            return 0 if passed else 1
         if args.replay_options:
             print(json.dumps(replay_options(args.replay_options, config), sort_keys=True, indent=2))
             return 0

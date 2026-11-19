@@ -11,7 +11,7 @@ from orderbot.data.replay import AnalyzedBar
 from orderbot.options.liquidity_gate import OptionQuote
 from orderbot.options.strike_selector import select_strike
 
-from .base import GateResult, Signal, StrategyDecision
+from .base import DECISION_CANDLE_SOURCES, GateResult, Signal, StrategyDecision, candle_age_limit
 from .stop_plan import Side, StopPlan
 
 
@@ -48,7 +48,7 @@ class StrategyB:
         )}
 
         def decision(reason, signal=None):
-            return StrategyDecision(uid, minute, now, token, gates, reason, signal, strategy="ohl")
+            return StrategyDecision(uid, minute, now, token, gates, reason, signal, strategy="ohl", candle_source=row.source)
 
         def skip(gate, reason, **detail):
             gates[gate] = GateResult("fail", detail | {"reason": reason})
@@ -56,12 +56,12 @@ class StrategyB:
 
         session = TradingSession.from_config(minute.date(), self.config.market)
         future = self.master.front_future(session.day)
-        if row.source != "feed":
+        if row.source not in DECISION_CANDLE_SOURCES:
             return skip("closed_candle", "backfill_candle")
         if now < minute + MINUTE:
             return skip("closed_candle", "unclosed_candle")
         if (now.date() != session.day or not session.opens_at <= minute < session.closes_at or
-            (now - minute - MINUTE).total_seconds() >= self.config.data.websocket_stale_seconds):
+            (now - minute - MINUTE).total_seconds() >= candle_age_limit(self.config, row.source)):
             return skip("closed_candle", "stale_candle")
         if token != future.token:
             return skip("closed_candle", "wrong_signal_instrument")

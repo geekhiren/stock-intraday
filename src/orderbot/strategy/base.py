@@ -3,6 +3,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Literal
 
+from orderbot.core.config import Config
 from orderbot.core.ist_time import as_ist
 from orderbot.options.strike_selector import StrikeDecision
 
@@ -10,6 +11,13 @@ from .stop_plan import Side, StopPlan
 
 
 StrategyName = Literal["vwap", "ohl"]
+DECISION_CANDLE_SOURCES = frozenset({"feed", "broker"})
+
+
+def candle_age_limit(config: Config, source: str) -> float:
+    if source == "broker":
+        return config.paper_trial.broker_candle_max_age_seconds
+    return config.data.websocket_stale_seconds
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +45,7 @@ class StrategyDecision:
     reason: str
     signal: Signal | None = None
     strategy: StrategyName = "vwap"
+    candle_source: str = "feed"
 
     def __post_init__(self):
         object.__setattr__(self, "candle_at", as_ist(self.candle_at))
@@ -48,6 +57,8 @@ class StrategyDecision:
             "future_token": self.token, "reason": self.reason,
             "gates": {name: asdict(result) for name, result in self.gates.items()},
         }
+        if self.candle_source != "feed":
+            record["candle_source"] = self.candle_source
         if self.signal is not None:
             record.update(side=self.signal.side, right=self.signal.right, option_token=self.signal.selection.selected_token,
                           stop_plan=self.signal.stop_plan.view(), target_bid=str(self.signal.target_bid))

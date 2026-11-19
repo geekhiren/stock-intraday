@@ -220,6 +220,22 @@ def test_execution_rechecks_latest_quote_and_cutoff(session, tmp_path):
     assert executor.journal.snapshot().orders == ()
 
 
+def test_confirmed_broker_candle_keeps_live_quote_age_and_unfunded_risk_gate(session, tmp_path):
+    history, current = bars(session)
+    current = replace(current, source="broker")
+    clock = [current.bar.at + MINUTE + timedelta(seconds=CONFIG.paper_trial.finalize_delay_seconds)]
+    quote = book(clock[0], "long")
+    old = book(current.bar.at + MINUTE, "long")
+    assert assess(session, history, current, at=clock[0], quotes={old.token: old}).reason == "skipped_illiquid"
+    assert assess(session, history, replace(current, source="feed"), at=clock[0]).reason == "stale_candle"
+    decision = assess(session, history, current, at=clock[0], quotes={quote.token: quote})
+    assert decision.signal is not None and decision.candle_source == "broker"
+    executor = paper_executor(replace(session, config=CONFIG), tmp_path, clock)
+    outcome = submit_strategy_decision(decision, executor, spot=D("22150"), quotes={quote.token: quote})
+    assert outcome.reason == "risk_unconfigured"
+    assert executor.journal.snapshot().orders == ()
+
+
 def test_unclosed_input_does_not_reserve_the_closed_signal_id(session, tmp_path):
     history, current = bars(session)
     clock = [current.bar.at + timedelta(seconds=59)]
