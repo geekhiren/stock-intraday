@@ -29,6 +29,7 @@
     <div class="topbar">
       <span id="broker" class="broker" data-state="disconnected">Connecting to journal</span>
       <time id="clock">—</time>
+      <button id="notify" class="btn sm" type="button" aria-pressed="false">Trade alerts off</button>
       <button id="resume" class="btn" type="button" hidden>Resume trading</button>
       <button id="stop" class="btn danger" type="button" disabled>Stop trading</button>
     </div>
@@ -71,6 +72,7 @@
           </form>
         </div>
         <p id="manual-message" class="muted form-message" aria-live="polite">The bot also trades automatically. A manual trade uses the same ₹ risk, stop, target and auto exit. Position count and capital are in Settings.</p>
+        <div id="why" class="note" hidden><b>Why no trade today?</b><ul id="why-list"></ul></div>
         <div id="position-cards" class="position-cards"></div>
         <div class="table-scroll"><table><thead><tr><th scope="col">Stock</th><th scope="col">Setup</th><th scope="col" class="right">Qty</th><th scope="col" class="right">Entry</th><th scope="col" class="right">Stop</th><th scope="col" class="right">Target</th><th scope="col" class="right">Last / exit</th><th scope="col">Status</th><th scope="col" class="right">Net P&amp;L</th></tr></thead><tbody id="stock-trades"></tbody></table></div>
         <p class="muted footnote">Simulated fills from one-minute quotes with full intraday charges. No orders reach the broker.</p>

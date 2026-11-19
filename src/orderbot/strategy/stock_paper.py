@@ -189,6 +189,7 @@ class StockPaperTrader:
         self._marks: dict[str, Decimal] = {}
         self._ticks: dict[str, Tick] = {}
         self._names: dict[str, str] = {}
+        self._first_scan: datetime | None = None  # first scan of the current day, to explain missed setups
         self._last_at: datetime | None = None
         self._baselines: dict[str, tuple[Decimal, Decimal]] = {}
         self._baseline_day: date | None = None
@@ -239,6 +240,8 @@ class StockPaperTrader:
     def on_scan(self, quotes, universe: dict[str, str], at: datetime) -> None:
         now, ticks = as_ist(at), self._parse(quotes, universe)
         self._names = universe  # token -> symbol, also for stocks with no usable quote right now
+        if self._first_scan is None or self._first_scan.date() != now.date():
+            self._first_scan = now
         if self._last_at is None or now.date() != self._last_at.date() or now - self._last_at > MAX_SAMPLE_GAP:
             self._series.clear()  # a gap would corrupt minute-based volume, RSI and crossover checks
         self._last_at, self._ticks = now, ticks
@@ -547,6 +550,45 @@ class StockPaperTrader:
                     found.append(_Candidate(tick, "vwap", side, cfg.k_sl * series.atr, cfg.k_tgt / cfg.k_sl))
         return found
 
+    def _why(self, now: datetime, scan_at: datetime, latch, ranges: int, play_rows, plays) -> list[str]:
+        """Plain reasons why there is no stock trade yet today, most decisive first."""
+        cfg, stocks, started = self.config, self.config.stocks, self._first_scan
+        opening = datetime.combine(now.date(), cfg.market.session_open, now.tzinfo)
+        freeze = opening + timedelta(minutes=cfg.strategy_b.range_minutes)
+        if now.weekday() >= 5:
+            return ["The market is closed at the weekend."]
+        if started is None or started.date() != now.date():
+            return ["The bot has not completed a price scan today."]
+        reasons = []
+        if latch is not None:
+            reasons.append(f"Stop trading was pressed at {from_storage(latch['at_utc']):%H:%M} IST, which blocks every entry for the day."
+                           if latch["reason"] == "dashboard_stop" else f"A safety stop is on for today ({latch['reason'].replace('_', ' ')}).")
+        if now < scan_at:
+            return reasons + [f"Trading starts after the {scan_at:%H:%M} stocks-in-play scan."]
+        if stocks.sip_entries:
+            waiting = sum(play["state"] == "waiting" for play in plays)
+            refused = sum(play["state"] == "triggered" for play in plays)
+            if not play_rows and started >= scan_at + FREEZE_GRACE:
+                reasons.append(f"Stocks in play missed: the bot started at {started:%H:%M}, after the {scan_at:%H:%M} scan.")
+            elif not play_rows:
+                reasons.append(f"Stocks in play missed: the 14-session history was not ready at {scan_at:%H:%M}. Start the bot by 09:05.")
+            elif not plays:
+                reasons.append(f"No stock had above-normal opening volume at {scan_at:%H:%M}.")
+            else:
+                if waiting:
+                    reasons.append(f"{waiting} stock{'' if waiting == 1 else 's'} in play {'has' if waiting == 1 else 'have'} not broken the breakout level yet.")
+                if refused:
+                    reasons.append(f"{refused} broke out but {'was' if refused == 1 else 'were'} not taken: the spread was too wide, "
+                                   "charges were too large for the risk, or trading was blocked at that moment.")
+        if not ranges and started >= freeze + FREEZE_GRACE:
+            reasons.append(f"Opening range missed: the bot started at {started:%H:%M}, after {freeze:%H:%M}.")
+        elif ranges and now.time() >= cfg.strategy_b.entry_window_end:
+            reasons.append(f"No opening-range breakout met the rules before {cfg.strategy_b.entry_window_end:%H:%M} "
+                           "(open at the range edge, a matching gap, a tight spread).")
+        elif ranges:
+            reasons.append(f"Opening-range breakouts are being watched until {cfg.strategy_b.entry_window_end:%H:%M}.")
+        return reasons
+
     # -- dashboard view -----------------------------------------------------------------------------
     def snapshot(self, at: datetime) -> dict:
         now, stocks = as_ist(at), self.config.stocks
@@ -565,6 +607,8 @@ class StockPaperTrader:
                 periods.append({"name": name, "from": start.isoformat(), "trades": count, "wins": wins, "net_paise": net})
             play_rows = connection.execute("SELECT * FROM stock_plays WHERE session_day=? ORDER BY relative_volume DESC",
                                            (today.isoformat(),)).fetchall()
+            latch = connection.execute("SELECT at_utc, reason FROM kill_switch_latches WHERE session_day=?", (today.isoformat(),)).fetchone()
+            ranges = connection.execute("SELECT COUNT(*) FROM stock_ranges WHERE session_day=?", (today.isoformat(),)).fetchone()[0]
             curve = [{"day": day, "strategy": strategy, "net_paise": net} for day, strategy, net in connection.execute("""
                 SELECT session_day, strategy, SUM(net_paise) FROM stock_trades WHERE exit_at_utc IS NOT NULL
                 GROUP BY session_day, strategy ORDER BY session_day, strategy
@@ -606,6 +650,7 @@ class StockPaperTrader:
             "net_paise": sum(trade["net_paise"] for trade in closed),
             "open": [view(row) for row in rows if not row["exit_at_utc"]], "trades": closed, "stats": stats, "curve": curve,
             "periods": periods, "plays": plays, "play_note": play_note, "settings": self.settings(),
+            "why": [] if any(row["session_day"] == today.isoformat() for row in rows) else self._why(now, scan_at, latch, ranges, play_rows, plays),
             "watchlist": [row | {"today_pct": changes.get(row["symbol"])} for row in self.watchlist]
             if self._baseline_day == now.date() else [],
         }

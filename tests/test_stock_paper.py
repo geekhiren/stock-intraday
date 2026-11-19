@@ -225,3 +225,23 @@ def test_settings_are_validated_saved_and_applied_and_summaries_report_periods(t
     assert [(period["name"], period["trades"], period["wins"]) for period in book["periods"]] == [
         ("Today", 1, 1), ("This week", 1, 1), ("This month", 1, 1)]
     assert book["plays"] == [] and book["play_note"] == "Stocks in play is switched off in Settings."
+
+
+def test_why_no_trade_explains_a_late_start_and_a_pressed_stop(tmp_path):
+    db = tmp_path / "stocks.sqlite3"
+    trader = StockPaperTrader(CONFIG, db)
+    at = parse_timestamp("2026-11-30T09:41:00+05:30")
+    assert trader.snapshot(at)["why"] == ["The bot has not completed a price scan today."]
+    trader.on_scan([alpha(200.5)], UNIVERSE, at)
+    assert trader.snapshot(at)["why"] == ["Stocks in play missed: the bot started at 09:41, after the 09:20 scan.",
+                                         "Opening range missed: the bot started at 09:41, after 09:30."]
+    ExitStore(db).latch(at, "dashboard_stop")
+    assert trader.snapshot(at)["why"][0] == "Stop trading was pressed at 09:41 IST, which blocks every entry for the day."
+    assert trader.snapshot(parse_timestamp("2026-11-28T11:00:00+05:30"))["why"] == ["The market is closed at the weekend."]
+
+    on_time = StockPaperTrader(CONFIG, tmp_path / "second.sqlite3")
+    start = parse_timestamp("2026-11-30T09:30:10+05:30")
+    on_time.on_scan([alpha(200.5)], UNIVERSE, start)
+    assert on_time.snapshot(start)["why"][-1] == "Opening-range breakouts are being watched until 10:00."
+    on_time.on_scan([alpha(201.2)], UNIVERSE, start + MINUTE)
+    assert on_time.snapshot(start + MINUTE)["why"] == []  # a trade is open, so there is nothing to explain

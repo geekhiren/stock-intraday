@@ -55,8 +55,37 @@ function element(tag, text, className) {
   return node;
 }
 
-function renderTable(id, rows, columns, empty) {
-  const items = rows.map((cells) => {
+// Every table can be sorted by clicking a header; the longer ones also get a search box.
+const tables = new Map();   // id -> { rows, columns, empty }
+const tableSort = new Map();  // id -> { column, direction }
+const tableSearch = new Map();  // id -> text
+const searchable = ['stock-trades', 'backtest-trades', 'backtest-history', 'log', 'trades', 'alerts'];
+
+function cellText(value) {
+  return value instanceof Node ? value.textContent : String(value ?? '');
+}
+
+function sortKey(text) {
+  const date = /^(\d\d)\/(\d\d)\/(\d{4})(.*)$/.exec(text);
+  if (date) return `${date[3]}${date[2]}${date[1]}${date[4]}`;
+  const number = Number(text.replace(/[₹,%×\s]|usual|stocks|sessions/g, '').replace('−', '-'));
+  return text.trim() !== '' && Number.isFinite(number) ? number : text.toLowerCase();
+}
+
+function drawTable(id) {
+  const { rows, columns, empty } = tables.get(id);
+  const wanted = (tableSearch.get(id) || '').trim().toLowerCase();
+  let shown = wanted ? rows.filter((cells) => cells.some(([value]) => cellText(value).toLowerCase().includes(wanted))) : rows.slice();
+  const order = tableSort.get(id);
+  if (order) {
+    shown = shown.map((cells, index) => ({ cells, index, key: sortKey(cellText(cells[order.column][0])) })).sort((left, right) => {
+      const mixed = typeof left.key !== typeof right.key;
+      const first = mixed ? String(left.key) : left.key;
+      const second = mixed ? String(right.key) : right.key;
+      return (first < second ? -1 : first > second ? 1 : left.index - right.index) * order.direction;
+    }).map((item) => item.cells);
+  }
+  const items = shown.map((cells) => {
     const row = element('tr');
     for (const [value, style, title] of cells) {
       const cell = element('td', undefined, style);
@@ -68,12 +97,91 @@ function renderTable(id, rows, columns, empty) {
   });
   if (!items.length) {
     const row = element('tr');
-    const cell = element('td', empty, 'muted');
+    const cell = element('td', wanted ? `Nothing matches "${wanted}".` : empty, 'muted');
     cell.colSpan = columns;
     row.append(cell);
     items.push(row);
   }
   byId(id).replaceChildren(...items);
+}
+
+function setUpTable(id) {
+  const body = byId(id);
+  const table = body.closest('table');
+  [...table.querySelectorAll('th')].forEach((header, column) => {
+    header.dataset.sort = column;
+    header.tabIndex = 0;
+    const toggle = () => {
+      const current = tableSort.get(id);
+      const direction = current && current.column === column ? -current.direction : 1;
+      tableSort.set(id, { column, direction });
+      for (const other of table.querySelectorAll('th')) other.removeAttribute('aria-sort');
+      header.setAttribute('aria-sort', direction > 0 ? 'ascending' : 'descending');
+      drawTable(id);
+    };
+    header.addEventListener('click', toggle);
+    header.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggle(); } });
+  });
+  if (searchable.includes(id)) {
+    const box = element('input', undefined, 'table-search');
+    box.type = 'search';
+    box.placeholder = 'Search this table';
+    box.setAttribute('aria-label', 'Search this table');
+    box.addEventListener('input', () => { tableSearch.set(id, box.value); drawTable(id); });
+    table.parentElement.before(box);
+  }
+}
+
+function renderTable(id, rows, columns, empty) {
+  if (!tables.has(id)) setUpTable(id);
+  tables.set(id, { rows, columns, empty });
+  drawTable(id);
+}
+
+// -- trade alerts: a desktop notification and a short tone when a paper trade opens or closes ---------
+let alertsOn = false;
+let lastTradeEvent = null;
+try { alertsOn = localStorage.getItem('orderbot-alerts') === 'on' && 'Notification' in window && Notification.permission === 'granted'; } catch { /* storage blocked */ }
+
+function showAlertsState() {
+  byId('notify').textContent = alertsOn ? 'Trade alerts on' : 'Trade alerts off';
+  byId('notify').setAttribute('aria-pressed', String(alertsOn));
+}
+showAlertsState();
+
+function tone440() {
+  try {
+    const audio = new (window.AudioContext || window.webkitAudioContext)();
+    const oscillator = audio.createOscillator();
+    const gain = audio.createGain();
+    oscillator.frequency.value = 660;
+    gain.gain.setValueAtTime(0.15, audio.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + 0.4);
+    oscillator.connect(gain).connect(audio.destination);
+    oscillator.start();
+    oscillator.stop(audio.currentTime + 0.4);
+  } catch { /* no audio device or the browser blocks sound before a click */ }
+}
+
+byId('notify').addEventListener('click', async () => {
+  if (!alertsOn && 'Notification' in window && Notification.permission !== 'granted') await Notification.requestPermission();
+  alertsOn = !alertsOn && 'Notification' in window && Notification.permission === 'granted';
+  try { localStorage.setItem('orderbot-alerts', alertsOn ? 'on' : 'off'); } catch { /* storage blocked */ }
+  showAlertsState();
+  if (alertsOn) { tone440(); new Notification('OrderBOT trade alerts are on', { body: 'You will hear a tone and see a note when a paper trade opens or closes.' }); }
+  else if ('Notification' in window && Notification.permission === 'denied') showNotice('Notifications are blocked for this page in your browser settings.');
+});
+
+function announceTrades(events) {
+  const trades = events.filter((event) => event.job === 'Paper trader' && /^(Bought|Sold short|Closed) /.test(event.message));
+  const newest = trades.length ? trades[0].at : lastTradeEvent || '';
+  if (lastTradeEvent !== null && alertsOn) {
+    for (const event of trades.filter((item) => item.at > lastTradeEvent).reverse()) {
+      tone440();
+      new Notification('OrderBOT paper trade', { body: event.message });
+    }
+  }
+  lastTradeEvent = newest;  // the first refresh only sets the starting point, so old trades are not announced
 }
 
 function showNotice(message) {
@@ -432,6 +540,9 @@ function renderStocks(stocks) {
   renderCurve(stocks ? stocks.curve : []);
   renderPeriods(stocks ? stocks.periods : []);
   renderPlays(stocks);
+  const why = stocks ? stocks.why : [];
+  byId('why').hidden = !why.length;
+  byId('why-list').replaceChildren(...why.map((reason) => element('li', reason)));
   renderSettings(stocks ? stocks.settings : null);
   renderStats('forward-stats', stats, 'No closed paper trades yet. Results build up as the bot trades each day.');
   const percent = (value) => (value === null || value === undefined ? '—' : `${value > 0 ? '+' : value < 0 ? '−' : ''}${Math.abs(value).toFixed(2)}%`);
@@ -592,6 +703,7 @@ function render(state) {
   renderMovers(state.movers);
   renderStocks(state.stocks);
   renderJobs(state.activity || []);
+  announceTrades(state.activity || []);
   renderBacktestHistory(state.backtests || []);
   renderPositionCards(state.stocks ? state.stocks.open : [], state.now);
 
