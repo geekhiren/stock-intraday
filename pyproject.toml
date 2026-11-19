@@ -24,5 +24,5 @@ test = ["pytest>=8,<10"]
 "orderbot.reporting.web" = ["*.html", "*.css", "*.js"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 testpaths = ["tests"]

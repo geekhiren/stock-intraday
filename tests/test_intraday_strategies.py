@@ -1,0 +1,36 @@
+from pathlib import Path
+
+from orderbot.core.config import load_config
+from research.intraday_strategies import s7_opening_range_breakout
+from research.intraday_strategies.common import Plan, build_days, simulate, summary
+
+CONFIG = load_config(Path(__file__).resolve().parents[1] / "config.yaml")
+
+
+def session(day, closes):
+    """One-minute candles from 09:15, each 0.10 wide around its close, with a prior day so RSI and gaps have history."""
+    rows = [[f"2026-11-27T15:29:00+05:30", 100, 100, 100, 100, 1000]]
+    for index, close in enumerate(closes):
+        clock = f"{9 + (15 + index) // 60:02d}:{(15 + index) % 60:02d}"
+        rows.append([f"{day}T{clock}:00+05:30", close, close + 0.05, close - 0.05, close, 1000])
+    return rows
+
+
+def test_simulator_sizes_by_risk_fills_the_target_and_prefers_the_stop():
+    days = build_days(session("2026-11-30", [100.0] * 5 + [100.5, 101.0, 102.1, 103.0]))
+    today = days[-1]
+    # Buy at the 09:19 close (100.00 + one tick); stop 99.05 risks 1.00 a share, so Rs 500 buys 499 within a Rs 50,000 slot.
+    trade, = simulate([today], lambda day: [Plan(4, 1, 99.05, target=102.05)], CONFIG)
+    assert (trade["quantity"], trade["entry"], trade["exit"], trade["reason"]) == (499, 100.05, 102.05, "target")
+    assert trade["gross"] == 998.0 and trade["gross"] - 70 < trade["net"] < trade["gross"] - 60  # about Rs 65 of charges
+    # A candle that touches both the stop and the target counts as a stop, one tick worse.
+    wide = build_days(session("2026-11-30", [100.0] * 5) + [["2026-11-30T09:20:00+05:30", 100, 103, 98, 100, 1000]])[-1]
+    stopped, = simulate([wide], lambda day: [Plan(4, 1, 99.05, target=102.05)], CONFIG)
+    assert (stopped["reason"], stopped["exit"]) == ("stop", 99.0) and summary([trade, stopped])["accuracy_pct"] == 50.0
+
+
+def test_opening_range_breakout_file_plans_the_first_break_with_the_articles_stop_and_target():
+    closes = [100.0] * 15 + [100.02] * 5 + [100.6] * 5
+    plan, = s7_opening_range_breakout.plans(build_days(session("2026-11-30", closes))[-1])
+    # Range 99.95-100.05; the 09:35-09:39 candle closes above it; stop is the range low, target 1.5 ranges above entry.
+    assert (plan.at, plan.side, plan.stop) == (24, 1, 99.95) and round(plan.target, 2) == 100.75
