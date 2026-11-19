@@ -1,0 +1,35 @@
+{
+  "source": "Synthetic dashboard session using the Phase 5 paper fills",
+  "instrument_master": "phase3_instruments.json",
+  "candle_at": "2026-11-30T11:18:00+05:30",
+  "clock": "2026-11-30T11:20:00+05:30",
+  "trades": [
+    {"id": "fixture-ce", "symbol": "NIFTY08DEC2622150CE", "token": "4102", "quantity": 65,
+     "entry_at": "2026-11-30T09:42:02+05:30", "exit_at": "2026-11-30T09:46:02+05:30",
+     "buy_touch": "120.05", "buy_fill": "120.10", "sell_touch": "129.95", "sell_fill": "129.90",
+     "exit_reason": "premium_target", "expected_net_paise": 57007},
+    {"id": "fixture-pe", "symbol": "NIFTY08DEC2622150PE", "token": "4202", "quantity": 65,
+     "entry_at": "2026-11-30T10:08:02+05:30", "exit_at": "2026-11-30T10:12:02+05:30",
+     "buy_touch": "120.05", "buy_fill": "120.10", "sell_touch": "114.95", "sell_fill": "114.90",
+     "exit_reason": "underlying_stop", "expected_net_paise": -40306}
+  ],
+  "position": {
+    "id": "fixture-open", "symbol": "NIFTY08DEC2622150CE", "token": "4102", "quantity": 65,
+    "entry_at": "2026-11-30T11:05:00+05:30", "buy_touch": "120.05", "buy_fill": "120.10",
+    "mark_at": "2026-11-30T11:19:57+05:30", "ltp": "124.35", "underlying_stop": "22110.00",
+    "premium_stop": "99.30", "underlying_entry": "22150.00", "atr": "20.00", "delta": "0.52"
+  },
+  "skips": [
+    ["fixture-volume", "2026-11-30T10:41:02+05:30", "no_volume"],
+    ["fixture-cooldown", "2026-11-30T11:11:02+05:30", "cooldown"],
+    ["fixture-illiquid", "2026-11-30T11:19:02+05:30", "skipped_illiquid"]
+  ],
+  "gates": {
+    "closed_candle": "pass", "vwap_crossover": "pass", "consolidation": "pass",
+    "volume_surge": "pass", "rsi": "pass", "pivot": "disabled", "liquidity": "fail",
+    "time_window": "pass", "iv": "not_evaluated"
+  },
+  "expected": {
+    "net_paise": 16701, "charges_paise": 13199, "slippage_paise": 1300, "trade_count": 2, "skipped_count": 3
+  }
+}

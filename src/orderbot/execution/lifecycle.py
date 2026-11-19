@@ -104,6 +104,8 @@ class OrderReport:
     first_fill_at: datetime | None = None
     last_fill_at: datetime | None = None
     reason: str | None = None
+    touch_value: Decimal | None = None
+    modeled_slippage: Decimal | None = None
 
     def __post_init__(self):
         quantity = self.filled_quantity
@@ -122,6 +124,12 @@ class OrderReport:
             object.__setattr__(self, "last_fill_at", last)
         elif self.filled_value or self.first_fill_at is not None or self.last_fill_at is not None:
             raise LifecycleError("An unfilled order cannot have fill timestamps or value.")
+        if self.touch_value is not None or self.modeled_slippage is not None:
+            if (
+                not quantity or not is_finite_decimal(self.touch_value) or self.touch_value <= 0
+                or not is_finite_decimal(self.modeled_slippage) or self.modeled_slippage < 0
+            ):
+                raise LifecycleError("Invalid cumulative slippage evidence.")
         if (
             (self.state is OrderState.FILLED) != (quantity == self.intent.quantity)
             or (self.state is OrderState.PARTIAL and not quantity)
@@ -134,12 +142,15 @@ class OrderReport:
         return self.filled_value / self.filled_quantity if self.filled_quantity else None
 
     def detail(self) -> dict:
-        return {
+        detail = {
             "filled_value": str(self.filled_value),
             "first_fill_at": self.first_fill_at.isoformat() if self.first_fill_at is not None else None,
             "last_fill_at": self.last_fill_at.isoformat() if self.last_fill_at is not None else None,
             "reason": self.reason,
         }
+        if self.touch_value is not None:
+            detail.update(touch_value=str(self.touch_value), modeled_slippage=str(self.modeled_slippage))
+        return detail
 
     @classmethod
     def from_detail(cls, intent, state, quantity, detail):
@@ -148,6 +159,8 @@ class OrderReport:
             intent, OrderState(state), quantity, Decimal(detail["filled_value"]),
             parse_timestamp(first) if first is not None else None,
             parse_timestamp(last) if last is not None else None, detail["reason"],
+            Decimal(detail["touch_value"]) if "touch_value" in detail else None,
+            Decimal(detail["modeled_slippage"]) if "modeled_slippage" in detail else None,
         )
 
 
@@ -168,6 +181,17 @@ def validate_transition(previous: OrderReport, current: OrderReport) -> None:
         beyond_limit = new_value > limit_value if current.intent.side == "BUY" else new_value < limit_value
         if new_value <= 0 or beyond_limit:
             raise LifecycleError("New fill contradicts the order limit.")
+    old_audit = (previous.touch_value, previous.modeled_slippage)
+    new_audit = (current.touch_value, current.modeled_slippage)
+    if new_quantity == 0 and old_audit != new_audit:
+        raise LifecycleError("Slippage evidence changed without a new fill.")
+    if previous.filled_quantity and new_quantity:
+        if (previous.touch_value is None) != (current.touch_value is None) or (
+            previous.touch_value is not None and (
+                current.touch_value <= previous.touch_value or current.modeled_slippage < previous.modeled_slippage
+            )
+        ):
+            raise LifecycleError("Cumulative slippage evidence regressed or changed coverage.")
 
 
 def observed_transitions(previous: OrderReport, reported: OrderReport) -> tuple[OrderReport, ...]:

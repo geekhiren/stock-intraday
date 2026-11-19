@@ -6,6 +6,7 @@ from pathlib import Path
 
 from orderbot.core.ist_time import as_ist, from_storage, parse_timestamp, to_storage
 from orderbot.core.state_store import open_store
+from orderbot.reporting.alerts import queue_alert
 
 from .exit_rules import TrailState
 
@@ -81,15 +82,20 @@ class ExitStore:
                 if inserted:
                     connection.execute("INSERT INTO exit_audit(at_utc, event, fields_json) VALUES (?, ?, ?)",
                                        (utc, "kill_switch_fired", json.dumps({"reason": reason})))
+                    queue_alert(connection, f"kill_switch:{day}", "kill_switch", day, at, {"reason": reason})
             row = connection.execute("SELECT reason FROM kill_switch_latches WHERE session_day=?", (day,)).fetchone()
         return (row[0] if row else None), inserted
 
-    def emit(self, at: datetime, event: str, fields: dict, *, once_key: str | None = None) -> bool:
+    def emit(self, at: datetime, event: str, fields: dict, *, once_key: str | None = None,
+             alert_correlation_id: str | None = None) -> bool:
         with open_store(self.path) as connection:
-            return bool(connection.execute(
+            inserted = connection.execute(
                 "INSERT OR IGNORE INTO exit_audit(at_utc, event, fields_json, once_key) VALUES (?, ?, ?, ?)",
                 (to_storage(at), event, json.dumps(fields), once_key),
-            ).rowcount)
+            ).rowcount
+            if inserted and alert_correlation_id is not None:
+                queue_alert(connection, f"{event}:{alert_correlation_id}", event, alert_correlation_id, at, fields)
+            return bool(inserted)
 
     def events(self) -> list[dict]:
         with open_store(self.path) as connection:

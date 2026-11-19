@@ -21,6 +21,7 @@ test = ["pytest>=8,<10"]
 
 [tool.setuptools.package-data]
 "orderbot.core" = ["*.sql"]
+"orderbot.reporting.web" = ["*.html", "*.css", "*.js"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

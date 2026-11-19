@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en-IN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="orderbot-refresh-seconds" content="{{refresh_seconds}}">
+  <title>OrderBOT · Session monitor</title>
+  <link rel="stylesheet" href="/dashboard.css">
+  <script src="/dashboard.js" defer></script>
+</head>
+<body>
+  <header class="masthead">
+    <div class="masthead-inner">
+      <div class="brand"><span class="brand-mark" aria-hidden="true"></span>OrderBOT</div>
+      <strong class="mode" id="mode">PAPER</strong>
+      <div class="masthead-status"><time id="clock">—</time><span id="broker" class="broker" data-state="disconnected">Connecting to journal</span></div>
+      <button id="stop" type="button" disabled><span aria-hidden="true"></span>Stop trading</button>
+    </div>
+  </header>
+  <main>
+    <div class="title-row">
+      <h1>Session monitor</h1>
+      <p id="session">NIFTY</p>
+    </div>
+    <p id="notice" class="notice" aria-live="polite" hidden></p>
+    <div class="overview">
+      <section class="panel net" aria-labelledby="net-title">
+        <h2 id="net-title">Realized net P&amp;L</h2>
+        <div id="net" class="big-value">—</div>
+        <div class="net-footer"><span id="reconciliation">Checking journal</span><span id="limit">Daily loss limit —</span></div>
+      </section>
+      <section class="panel" aria-labelledby="position-title">
+        <h2 id="position-title">Open position</h2>
+        <div id="positions" class="position-group"><p class="muted">Reading journal</p></div>
+      </section>
+    </div>
+    <section class="panel gates-panel" aria-labelledby="gates-title">
+      <div class="section-heading"><h2 id="gates-title">Strategy A gates</h2><p id="candle">NIFTY futures · 1 min</p></div>
+      <ul id="gates" class="gate-grid"></ul>
+    </section>
+    <div class="activity">
+      <section class="panel" aria-labelledby="trades-title">
+        <div class="section-heading"><h2 id="trades-title">Closed trades</h2><p id="trade-count"></p></div>
+        <div class="table-scroll"><table><thead><tr><th scope="col">Exit IST</th><th scope="col">Contract</th><th scope="col" class="right">Qty</th><th scope="col" class="right">Net P&amp;L</th></tr></thead><tbody id="trades"></tbody></table></div>
+      </section>
+      <section class="panel" aria-labelledby="skips-title">
+        <div class="section-heading"><h2 id="skips-title">Skipped signals</h2><p id="skip-count"></p></div>
+        <div class="table-scroll"><table><thead><tr><th scope="col">Time IST</th><th scope="col">Reason</th></tr></thead><tbody id="skips"></tbody></table></div>
+      </section>
+    </div>
+    <section class="panel" aria-labelledby="alerts-title">
+      <div class="section-heading"><h2 id="alerts-title">Recent alerts</h2><p id="delivery"></p></div>
+      <div class="table-scroll"><table><thead><tr><th scope="col">Time IST</th><th scope="col">Event</th><th scope="col">Details</th><th scope="col" class="right">Delivery</th></tr></thead><tbody id="alerts"></tbody></table></div>
+    </section>
+  </main>
+</body>
+</html>

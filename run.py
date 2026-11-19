@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 import json
 import sqlite3
 import sys
 from datetime import date
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from uuid import uuid4
 
 from orderbot.broker.angel_client import AngelClient, LoginError, read_credentials
@@ -18,7 +20,33 @@ from orderbot.data.capture import capture_session, compare_with_broker, load_rep
 from orderbot.execution.exit_replay import replay_exits
 from orderbot.execution.replay import replay_execution
 from orderbot.options.replay import replay_options
+from orderbot.reporting.alerts import alert_worker
+from orderbot.reporting.daily_report import build_report, daily_report_worker, render_markdown
+from orderbot.reporting.dashboard import make_server
+from orderbot.reporting.fixtures import seed_surface_fixture
 from orderbot.strategy.replay import replay_strategy_a
+
+
+def run_surface(config, directory, args, db, *, fixture_clock=None) -> int:
+    if args.report:
+        report = build_report(db, args.report)
+        sys.stdout.reconfigure(encoding="utf-8")
+        if args.report_format == "markdown":
+            print(render_markdown(report), end="")
+        else:
+            print(json.dumps(report, indent=2, ensure_ascii=False))
+        return 0 if report["reconciliation"]["status"] == "reconciled" else 1
+
+    fixture = fixture_clock is not None
+    logs_context = nullcontext() if fixture else open_logs(config.logging, directory)
+    with make_server(config, db, fixture=fixture, clock=(lambda: fixture_clock) if fixture else now_ist) as server:
+        with logs_context as logs:
+            alerts = nullcontext() if fixture else alert_worker(config.alerts, db, logs.application)
+            reports = nullcontext() if fixture else daily_report_worker(config.reporting, db, directory, logs.application)
+            with alerts, reports:
+                print(f"OrderBOT PAPER dashboard at http://127.0.0.1:{server.server_port}/", flush=True)
+                server.serve_forever()
+    return 0
 
 
 def main() -> int:
@@ -36,12 +64,20 @@ def main() -> int:
     action.add_argument("--replay-execution", type=Path, metavar="FIXTURE", help="Replay paper execution and restart")
     action.add_argument("--replay-strategy-a", type=Path, metavar="FIXTURE", help="Replay Strategy A against fixtures")
     action.add_argument("--replay-exits", type=Path, metavar="FIXTURE", help="Drill paper exits and kill switches")
+    action.add_argument("--dashboard", action="store_true", help="Serve the local paper dashboard")
+    action.add_argument("--report", type=date.fromisoformat, metavar="YYYY-MM-DD", help="Report an IST session")
     action.add_argument("--compare-history", type=date.fromisoformat, metavar="YYYY-MM-DD",
                         help="Compare a capture with SmartAPI historical candles")
     parser.add_argument("--option-token", action="append", default=[], help="Include a dated NIFTY option in capture")
+    parser.add_argument("--surface-fixture", type=Path, metavar="FIXTURE", help="Use an isolated dashboard or report fixture")
+    parser.add_argument("--report-format", choices=("json", "markdown"), help="Daily report format (default JSON)")
     args = parser.parse_args()
     if args.option_token and not args.capture_data:
         parser.error("--option-token requires --capture-data")
+    if args.surface_fixture and not (args.dashboard or args.report):
+        parser.error("--surface-fixture requires --dashboard or --report")
+    if args.report_format and not args.report:
+        parser.error("--report-format requires --report")
 
     try:
         config = load_config(args.config)
@@ -72,6 +108,15 @@ def main() -> int:
         if args.replay_exits:
             print(json.dumps(replay_exits(args.replay_exits, config), sort_keys=True, indent=2))
             return 0
+        if args.dashboard or args.report:
+            if args.surface_fixture:
+                with TemporaryDirectory(prefix="orderbot-surface-") as temporary:
+                    db = Path(temporary) / "fixture.sqlite3"
+                    fixture_clock = seed_surface_fixture(args.surface_fixture, config, db)
+                    if args.report and args.report != fixture_clock.date():
+                        raise ValueError(f"Surface fixture session is {fixture_clock.date()} IST.")
+                    return run_surface(config, directory, args, db, fixture_clock=fixture_clock)
+            return run_surface(config, directory, args, directory / config.storage.sqlite_path)
         if args.compare_history:
             report, passed = compare_with_broker(config, directory, args.compare_history)
             print(json.dumps(report, sort_keys=True))
@@ -113,7 +158,7 @@ def main() -> int:
         print(str(exc), file=sys.stderr)
         return 1
     except KeyboardInterrupt:
-        print("Paper data capture interrupted.", file=sys.stderr)
+        print("Stopped PAPER session.", file=sys.stderr)
         return 130
 
 

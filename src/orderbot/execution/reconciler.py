@@ -63,6 +63,6 @@ class Reconciler:
         return Reconciliation(True, "reconciled", positions)
 
     def _failed(self, at: datetime, reason: str) -> Reconciliation:
-        self.journal.halt(at, reason)
+        self.journal.halt(at, reason, reconciliation_failure=True)
         self.alert({"event": "reconciliation_failed", "at": at.isoformat(), "reason": reason})
         return Reconciliation(False, reason)

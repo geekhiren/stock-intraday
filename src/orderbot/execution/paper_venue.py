@@ -112,9 +112,12 @@ class PaperVenue:
             ON CONFLICT(token, side, at_utc, touch_paise) DO UPDATE SET units = units + excluded.units
         """, (*key, filled))
         cumulative = report.filled_quantity + filled
+        measured = not report.filled_quantity or report.touch_value is not None
         return OrderReport(
             intent, OrderState.FILLED if cumulative == intent.quantity else OrderState.PARTIAL,
             cumulative, report.filled_value + price * filled, report.first_fill_at or now, now,
+            touch_value=(report.touch_value or Decimal(0)) + level.price * filled if measured else None,
+            modeled_slippage=(report.modeled_slippage or Decimal(0)) + slippage * filled if measured else None,
         )
 
     def fresh_book(self, quote: OptionQuote, token: str, tick: Decimal, at: datetime, *, side: str = "BUY") -> bool:

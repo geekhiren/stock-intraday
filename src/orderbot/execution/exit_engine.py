@@ -246,7 +246,8 @@ class ExitEngine:
 
     def _alert_once(self, now: datetime, event: str, correlation_id: str, fields: dict) -> None:
         fields = {"correlation_id": correlation_id, **fields}
-        if self.store.emit(now, event, fields, once_key=f"{event}:{correlation_id}"):
+        if self.store.emit(now, event, fields, once_key=f"{event}:{correlation_id}",
+                           alert_correlation_id=correlation_id):
             self.executor.alert({"event": event, "at": now.isoformat(), **fields})
 
 

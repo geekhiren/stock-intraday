@@ -11,6 +11,7 @@ from orderbot.core.config import CostConfig
 from orderbot.core.ist_time import as_ist, from_storage, parse_timestamp, to_storage
 from orderbot.core.money import PAISA, round_inr
 from orderbot.core.state_store import open_store
+from orderbot.reporting.alerts import queue_alert
 from orderbot.risk.cost_model import round_trip_cost
 
 from .lifecycle import LifecycleError, OrderIntent, OrderReport, OrderState, observed_transitions, validate_transition
@@ -116,9 +117,9 @@ class Journal:
     def snapshot(self) -> Ledger:
         with open_store(self.path) as connection:
             connection.execute("BEGIN")
-            return self._read(connection)
+            return self.read_in(connection)
 
-    def _read(self, connection) -> Ledger:
+    def read_in(self, connection) -> Ledger:
         rows = connection.execute("""
             SELECT orders.*, events.event_id, events.state, events.filled_quantity,
                    events.detail_json AS report_json
@@ -166,7 +167,7 @@ class Journal:
         events = tuple(OrderReport(intent, OrderState.INTENT) for intent in intents)
         with open_store(self.path) as connection:
             connection.execute("BEGIN IMMEDIATE")
-            ledger = self._read(connection)
+            ledger = self.read_in(connection)
             if ledger.revision != revision:
                 raise JournalConflict("Ledger changed before orders could be reserved.")
             if first.side == "BUY":
@@ -192,7 +193,7 @@ class Journal:
     def claim(self, tag: str, at: datetime) -> OrderReport:
         with open_store(self.path) as connection:
             connection.execute("BEGIN IMMEDIATE")
-            ledger = self._read(connection)
+            ledger = self.read_in(connection)
             previous = next(item for item in ledger.orders if item.intent.tag == tag)
             if previous.state is not OrderState.INTENT or (
                 previous.intent.side == "BUY" and as_ist(at).date() in ledger.halts
@@ -212,7 +213,7 @@ class Journal:
         now = as_ist(at)
         with open_store(self.path) as connection:
             connection.execute("BEGIN IMMEDIATE")
-            ledger = self._read(connection)
+            ledger = self.read_in(connection)
             if revision is not None and ledger.revision != revision:
                 raise JournalConflict("Ledger changed before reconciliation could be committed.")
             current = {item.intent.tag: item for item in ledger.orders}
@@ -224,6 +225,9 @@ class Journal:
                     raise LifecycleError("Venue report contains a future fill timestamp.")
                 events.extend(observed_transitions(previous, item))
                 current[item.intent.tag] = item
+                if item.intent.side == "BUY" and item.filled_quantity and not previous.filled_quantity:
+                    queue_alert(connection, f"entry:{item.intent.decision_id}", "entry", item.intent.decision_id,
+                                item.first_fill_at, {"symbol": item.intent.symbol, "filled_quantity": item.filled_quantity})
             for tag in cancel_unsent:
                 previous = current[tag]
                 if previous.state is not OrderState.INTENT:
@@ -237,21 +241,32 @@ class Journal:
             for event in events:
                 self._write_event(connection, event, at)
             for trade in trades:
-                connection.execute(
+                inserted = connection.execute(
                     "INSERT OR IGNORE INTO trades VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (trade["trade_id"], trade["trade_id"], to_storage(parse_timestamp(trade["opened_at"])),
                      to_storage(parse_timestamp(trade["closed_at"])), trade["quantity"],
                      int(Decimal(trade["net_pnl_inr"]) / PAISA), json.dumps(trade)),
-                )
+                ).rowcount
+                if inserted:
+                    queue_alert(connection, f"exit:{trade['trade_id']}", "exit", trade["trade_id"],
+                                parse_timestamp(trade["closed_at"]), {
+                                    "symbol": trade["symbol"], "quantity": trade["quantity"],
+                                    "net_pnl_inr": trade["net_pnl_inr"],
+                                })
         for event in events:
             self._audit(event, at)
 
-    def halt(self, at: datetime, reason: str) -> bool:
+    def halt(self, at: datetime, reason: str, *, reconciliation_failure: bool = False) -> bool:
+        day = as_ist(at).date().isoformat()
         with open_store(self.path) as connection:
-            return bool(connection.execute(
+            inserted = connection.execute(
                 "INSERT OR IGNORE INTO execution_halts VALUES (?, ?, ?)",
-                (as_ist(at).date().isoformat(), to_storage(at), reason),
-            ).rowcount)
+                (day, to_storage(at), reason),
+            ).rowcount
+            if reconciliation_failure:
+                queue_alert(connection, f"reconciliation_failure:{day}:{reason}", "reconciliation_failure",
+                            day, at, {"reason": reason})
+            return bool(inserted)
 
     def decision_detail(self, decision_id: str) -> dict:
         with open_store(self.path) as connection:

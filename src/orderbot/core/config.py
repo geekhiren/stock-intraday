@@ -266,6 +266,41 @@ class LoggingConfig(Section):
 EnvName = Annotated[str, StringConstraints(pattern=r"^[A-Z_][A-Z0-9_]*$")]
 
 
+class ReportingConfig(Section):
+    dashboard_port: Annotated[int, Field(strict=True, ge=1, le=65535)]
+    refresh_seconds: PositiveSeconds
+    alert_history_limit: PositiveCount
+    daily_report_time: time
+    daily_report_directory: Path
+    feed_heartbeat_seconds: PositiveSeconds
+    feed_status_max_age_seconds: PositiveSeconds
+
+    @model_validator(mode="after")
+    def check_heartbeat(self):
+        if self.feed_heartbeat_seconds >= self.feed_status_max_age_seconds:
+            raise ValueError("Feed heartbeat must run before dashboard status expires.")
+        if self.daily_report_time.tzinfo or self.daily_report_time.second or self.daily_report_time.microsecond:
+            raise ValueError("Configure the daily report as an IST hour and minute.")
+        return self
+
+
+class AlertsConfig(Section):
+    telegram_enabled: Annotated[bool, Field(strict=True)]
+    telegram_token_env: EnvName
+    telegram_chat_id_env: EnvName
+    request_timeout_seconds: PositiveSeconds
+    worker_poll_seconds: PositiveSeconds
+    retry_initial_seconds: PositiveSeconds
+    retry_max_seconds: PositiveSeconds
+    lease_seconds: PositiveSeconds
+
+    @model_validator(mode="after")
+    def check_timers(self):
+        if self.retry_initial_seconds > self.retry_max_seconds or self.lease_seconds <= self.request_timeout_seconds:
+            raise ValueError("Alert retry, timeout and lease intervals do not agree.")
+        return self
+
+
 class BrokerConfig(Section):
     provider: Literal["angel_one"]
     base_url: Literal["https://apiconnect.angelone.in"]
@@ -291,6 +326,8 @@ class Config(Section):
     strategy_a: StrategyAConfig
     exits: ExitConfig
     kill_switch: KillSwitchConfig
+    reporting: ReportingConfig
+    alerts: AlertsConfig
     storage: StorageConfig
     logging: LoggingConfig
     broker: BrokerConfig
@@ -299,6 +336,8 @@ class Config(Section):
     def check_exit_session(self):
         if not self.market.session_open < self.exits.square_off_time < self.exits.backstop_time < self.market.session_close:
             raise ValueError("Square-off and its backstop must occur within the trading session.")
+        if self.reporting.daily_report_time <= self.market.session_close:
+            raise ValueError("The daily report must be scheduled after the trading session.")
         return self
 
 

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from itertools import chain
 from pathlib import Path
+from sqlite3 import Error as DatabaseError
 from time import sleep
 
 from orderbot.broker.angel_client import AngelClient, read_credentials
@@ -15,6 +16,7 @@ from orderbot.broker.instruments import NSE_CASH, NSE_DERIVATIVES, Instrument, l
 from orderbot.broker.ws_client import FeedError, FeedNotice, MarketFeed
 from orderbot.core.atomic_file import atomic_path
 from orderbot.core.config import Config
+from orderbot.core.feed_status import record_feed_status
 from orderbot.core.ist_time import now_ist
 
 from .candle_builder import Candle, TradingSession, minute_floor
@@ -142,6 +144,13 @@ def capture_session(
         session.day - timedelta(days=lookback), config.market,
     )
     context = {"correlation_id": correlation_id}
+    db = directory / config.storage.sqlite_path
+
+    def publish_feed(status, at):
+        try:
+            record_feed_status(db, status, at)
+        except (DatabaseError, OSError):
+            logger.warning("dashboard_feed_status_unavailable", extra=context)
 
     def fetch(start, end):
         try:
@@ -178,25 +187,36 @@ def capture_session(
             headers, {NSE_CASH: [master.spot.token], NSE_DERIVATIVES: [future.token, *option_tokens]},
             (NSE_DERIVATIVES, future.token), session,
         )
-        with closing(events):
-            for event in events:
-                if isinstance(event, FeedNotice):
-                    logger.info("feed_" + event.kind, extra=context)
-                    if event.kind == "unavailable":
-                        raise FeedError("Required signal feed did not recover within the reconnect window.")
-                    if event.kind != "connected":
-                        continue
-                    if pipeline is None:
-                        _save_seed(tick_dir, session, future.token, seed)
-                        pipeline = CandlePipeline(
-                            session, future.token, config.data, started_at=event.at,
-                            previous=seed.previous, backfill=seed.backfill,
-                        )
-                        event = ArchiveRecord(event.at, None)
-                    else:
-                        event = ArchiveRecord(event.at, None, discontinuity=True)
-                archive.append(event)
-                count += len(pipeline.step(event))
+        heartbeat = now_ist()
+        publish_feed("connecting", heartbeat)
+        try:
+            with closing(events):
+                for event in events:
+                    if isinstance(event, FeedNotice):
+                        logger.info("feed_" + event.kind, extra=context)
+                        if event.kind == "unavailable":
+                            raise FeedError("Required signal feed did not recover within the reconnect window.")
+                        status = "connected" if event.kind == "recovered" else event.kind
+                        heartbeat = event.at
+                        publish_feed(status, heartbeat)
+                        if event.kind != "connected":
+                            continue
+                        if pipeline is None:
+                            _save_seed(tick_dir, session, future.token, seed)
+                            pipeline = CandlePipeline(
+                                session, future.token, config.data, started_at=event.at,
+                                previous=seed.previous, backfill=seed.backfill,
+                            )
+                            event = ArchiveRecord(event.at, None)
+                        else:
+                            event = ArchiveRecord(event.at, None, discontinuity=True)
+                    elif (event.received_at - heartbeat).total_seconds() >= config.reporting.feed_heartbeat_seconds:
+                        heartbeat = event.received_at
+                        publish_feed("connected", heartbeat)
+                    archive.append(event)
+                    count += len(pipeline.step(event))
+        finally:
+            publish_feed("disconnected", max(heartbeat, now_ist()))
 
         if pipeline is None:
             raise FeedError("The market capture did not connect before the session closed.")

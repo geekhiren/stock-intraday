@@ -126,6 +126,23 @@ kill_switch:
   volatility_window_minutes: 5
   volatility_move_fraction: "0.015"
   sentinel_path: var/STOP
+reporting:
+  dashboard_port: 18765
+  refresh_seconds: 2
+  alert_history_limit: 6
+  daily_report_time: "15:35"
+  daily_report_directory: var/reports
+  feed_heartbeat_seconds: 4
+  feed_status_max_age_seconds: 15
+alerts:
+  telegram_enabled: false
+  telegram_token_env: ORDERBOT_TELEGRAM_TOKEN
+  telegram_chat_id_env: ORDERBOT_TELEGRAM_CHAT_ID
+  request_timeout_seconds: 5
+  worker_poll_seconds: 2
+  retry_initial_seconds: 5
+  retry_max_seconds: 300
+  lease_seconds: 20
 storage:
   sqlite_path: var/orderbot.sqlite3
 logging:

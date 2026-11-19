@@ -103,3 +103,17 @@ At 15:10 IST the controller latches the entry halt and runs the bid-referenced l
 All nine kill switches latch through SQLite. A switch cancels known working buys before processing further fills and attempts to close the confirmed position. A stale feed can delay the sell until an executable quote arrives. A position mismatch blocks new entries and holds liquidation until the independent position book reconciles. The fixture uses synthetic funding to seed the position and runs exits with capital and risk unset.
 
 Live timer and health-event delivery, Angel One depth, order/cancellation acknowledgement, and the broker's protection bands and fill behavior remain unverified. [Angel One market-price protection policy](https://www.angelone.in/riskpolicy)
+
+## Paper dashboard, report and alerts
+
+```powershell
+python run.py --dashboard --surface-fixture tests/fixtures/phase7_surface.json
+python run.py --report 2026-11-30 --surface-fixture tests/fixtures/phase7_surface.json --report-format markdown
+python -m pytest tests/test_reporting.py
+```
+
+The dashboard prints its loopback address at startup. The fixture creates independent temporary paper books and uses a fixed IST clock. Stop trading latches the current session in the journal. A running paper exit engine consumes that latch on its next event and waits for a valid quote if it still holds a position.
+
+Run `python run.py --dashboard` to use the configured journal. The dashboard process writes the dated Markdown report at the configured time, 15:35 IST by default, and catches up for that IST day when started after the cutoff. `python run.py --report YYYY-MM-DD` reads the same journal on demand and returns JSON by default. A reconciliation mismatch or missing fill or charge evidence gives the report command exit status 1. The report totals booked charges and independently recomputes each trade's net P&L from cumulative fill values. Older fills that lack touch-price evidence remain eligible for P&L reconciliation and are counted separately in the slippage comparison.
+
+Alerts for entry, exit, kill-switch and reconciliation failures are durable in SQLite. To route them to Telegram, set `alerts.telegram_enabled` in `config.yaml` and provide `ORDERBOT_TELEGRAM_TOKEN` and `ORDERBOT_TELEGRAM_CHAT_ID` in the dashboard process environment. Message delivery and retries run in the background while the dashboard process is running. A delivery timeout may result in a repeat message. Fixture dashboard sessions always use the local outbox. [Telegram Bot API](https://core.telegram.org/bots/api#sendmessage)
