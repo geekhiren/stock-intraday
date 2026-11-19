@@ -133,7 +133,7 @@ def test_missing_crossed_off_tick_and_future_books_fail_closed():
 def test_equal_delta_prefers_tighter_book_even_at_higher_premium(monkeypatch):
     monkeypatch.setattr(
         "orderbot.options.liquidity_gate.implied_greeks",
-        lambda *_: Greeks(D("0.1"), D("0.52"), D("22175")),
+        lambda *_, **__: Greeks(D("0.1"), D("0.52"), D("22175")),
     )
     snapshots = {"4101": quote("4101", bid="200.00", ask="200.05"), "4102": quote()}
     choice = select_strike(

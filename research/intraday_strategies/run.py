@@ -3,8 +3,7 @@
     python -m research.intraday_strategies.run --symbol RELIANCE
     python -m research.intraday_strategies.run --symbol HDFCBANK --only s2_breakout --trades
 
-It reads about 90 days of one-minute candles through the SmartAPI history cache (three requests the first time,
-none after that on the same day) and needs the broker settings in .env only when the cache is empty.
+It reads about 90 days of local one-minute candles. Pass --fetch-missing to use SmartAPI for gaps.
 """
 from __future__ import annotations
 
@@ -19,23 +18,25 @@ from orderbot.broker.history import HistoryCache, encode_minutes
 from orderbot.core.config import load_config
 from orderbot.core.ist_time import IST, now_ist
 from orderbot.data.movers import stock_universe
+from orderbot.data.stock_history import StockHistory
 
 from .common import build_days, simulate, summary
 
 ROOT = Path(__file__).resolve().parents[2]
 STRATEGIES = ("s2_breakout", "s6_gap_and_go")  # the others were removed for accuracy below 40%; see README.md
-PIECES, PIECE_DAYS = 3, 30  # one SmartAPI minute-history request covers about 30 days
+LOOKBACK_DAYS = 90
 
 
-def load_minutes(symbol: str, config) -> list:
+def load_minutes(symbol: str, config, *, fetch_missing=False) -> list:
     today = now_ist().date()
     master = ROOT / config.data.instrument_cache_dir / f"instruments-{today.isoformat()}.json"
-    if not master.is_file():
+    tokens = ({name: token for token, name in stock_universe(json.loads(master.read_text(encoding="utf-8"))).items()}
+              if master.is_file() else {})
+    if fetch_missing and not master.is_file():
         raise SystemExit("Today's instrument list is missing. Run: python run.py --fetch-instruments")
-    tokens = {name: token for token, name in stock_universe(json.loads(master.read_text(encoding="utf-8"))).items()}
-    if symbol not in tokens:
+    if fetch_missing and symbol not in tokens:
         raise SystemExit(f"{symbol} is not an F&O stock symbol.")
-    cache, session, rows = HistoryCache(config.data, ROOT), {}, []
+    cache, session = HistoryCache(config.data, ROOT), {}
     edge = datetime.combine(today, config.market.session_open, IST)
 
     def fetch(since, until):
@@ -45,10 +46,8 @@ def load_minutes(symbol: str, config) -> list:
             session.update(client=client, credentials=credentials, tokens=client.login(credentials))
         return session["client"].historical_minutes(session["credentials"], session["tokens"], "NSE", tokens[symbol], since, until)
 
-    for piece in reversed(range(PIECES)):
-        since, until = edge - timedelta(days=PIECE_DAYS * (piece + 1)), edge - timedelta(days=PIECE_DAYS * piece)
-        rows += encode_minutes(cache.get(tokens[symbol], since, until, lambda: fetch(since, until)))
-    return rows
+    return encode_minutes(StockHistory(config, cache).get(
+        symbol, tokens.get(symbol), edge - timedelta(days=LOOKBACK_DAYS), edge, fetch if fetch_missing else None))
 
 
 def main() -> None:
@@ -56,11 +55,14 @@ def main() -> None:
     parser.add_argument("--symbol", default="RELIANCE")
     parser.add_argument("--only", choices=STRATEGIES, help="Run one strategy file")
     parser.add_argument("--trades", action="store_true", help="List every trade")
+    parser.add_argument("--fetch-missing", action="store_true", help="Allow rate-limited SmartAPI reads for missing windows")
     args = parser.parse_args()
     config = load_config(ROOT / "config.yaml")
     if config.stocks.capital_inr is None or config.stocks.risk_per_trade_pct is None:
         parser.error("Set the stock paper capital and risk per trade in config.yaml before running a backtest.")
-    days = build_days(load_minutes(args.symbol.upper(), config))
+    days = build_days(load_minutes(args.symbol.upper(), config, fetch_missing=args.fetch_missing), market=config.market)
+    if not days:
+        parser.error("No local candles for this stock and date range. Import data or use --fetch-missing.")
     risk = config.stocks.capital_inr * config.stocks.risk_per_trade_pct / 100
     print(f"{args.symbol.upper()} · {len(days)} sessions · {days[0].date} to {days[-1].date} · "
           f"Rs {risk:.0f} risk per trade, Rs {config.stocks.capital_inr / config.stocks.max_positions:.0f} per position, Indian intraday charges\n")

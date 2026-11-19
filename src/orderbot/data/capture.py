@@ -17,7 +17,7 @@ from orderbot.broker.ws_client import FeedError, FeedNotice, MarketFeed
 from orderbot.core.atomic_file import atomic_path
 from orderbot.core.config import Config
 from orderbot.core.feed_status import record_feed_status
-from orderbot.core.ist_time import now_ist
+from orderbot.core.ist_time import now_ist, parse_timestamp
 
 from .candle_builder import Candle, TradingSession, minute_floor
 from .replay import CandlePipeline, ReplayReport, compare_candles, replay_archive
@@ -55,15 +55,25 @@ def _save_seed(directory: Path, session: TradingSession, token: str, seed: Sessi
     with atomic_path(_seed_path(directory, session)) as target:
         target.write_text(json.dumps({
             "signal_token": token,
+            "closes_at": session.closes_at.isoformat(),
             "previous": encode_minutes(seed.previous),
             "backfill": encode_minutes(seed.backfill),
         }, separators=(",", ":")), encoding="utf-8")
 
 
 def load_replay(config: Config, directory: Path, day: date) -> ReplayReport:
-    session = TradingSession.from_config(day, config.market)
     master = load_master(config.data, config.market.underlying, day, directory, download=False)
-    return _replay_session(config, directory, session, master.front_future(day))
+    future = master.front_future(day)
+    session = TradingSession.from_config(day, config.market)
+    seed_path = _seed_path(directory / config.data.tick_archive_dir, session)
+    if seed_path.is_file():
+        stored_close = json.loads(seed_path.read_text(encoding="utf-8")).get("closes_at")
+        if stored_close:
+            close = parse_timestamp(stored_close)
+            if close.date() != day or close <= session.opens_at:
+                raise ValueError("Invalid recorded capture close.")
+            session = TradingSession(day, session.opens_at, close)
+    return _replay_session(config, directory, session, future)
 
 
 def _replay_session(
@@ -78,10 +88,10 @@ def _replay_session(
 
 
 def compare_with_broker(config: Config, directory: Path, day: date) -> tuple[dict, bool]:
-    session = TradingSession.from_config(day, config.market)
+    future = load_master(config.data, config.market.underlying, day, directory, download=False).front_future(day)
+    session = TradingSession.from_config(day, config.market, segment="derivatives", index_expiry=future.expiry)
     if now_ist() < session.closes_at + timedelta(seconds=config.data.close_grace_seconds):
         raise ValueError("Compare against SmartAPI after the requested session closes.")
-    future = load_master(config.data, config.market.underlying, day, directory, download=False).front_future(day)
     replay = _replay_session(config, directory, session, future)
     cache = HistoryCache(config.data, directory)
     client = AngelClient.for_workspace(config, directory)
@@ -117,13 +127,16 @@ def capture_session(
     config: Config, directory: Path, logger: logging.Logger, correlation_id: str, option_tokens: list[str],
 ) -> int:
     now = now_ist()
-    session = TradingSession.from_config(now.date(), config.market)
+    session = TradingSession.from_config(now.date(), config.market, segment="derivatives")
     earliest = session.opens_at - timedelta(minutes=config.data.capture_lead_minutes)
     if not earliest <= now < session.closes_at:
         raise ValueError(f"Start paper capture between {earliest:%H:%M} and {session.closes_at:%H:%M} IST.")
     credentials = read_credentials(config.broker, env_file=directory / ".env")
     master = load_master(config.data, config.market.underlying, session.day, directory)
     future = master.front_future(session.day)
+    session = TradingSession.from_config(session.day, config.market, segment="derivatives", index_expiry=future.expiry)
+    if now >= session.closes_at:
+        raise ValueError(f"The near-month futures contract stopped trading at {session.closes_at:%H:%M} IST.")
     options = {option.token for option in master.options if option.expiry >= session.day}
     if set(option_tokens) - options:
         raise ValueError("Capture option tokens must be unexpired NIFTY options from the dated master.")
@@ -138,10 +151,10 @@ def capture_session(
         "x-client-code": credentials.client_code,
         "x-feed-token": auth.feed_token,
     }
-    latest_previous = TradingSession.from_config(session.day - timedelta(days=1), config.market)
+    latest_previous = TradingSession.from_config(session.day - timedelta(days=1), config.market, segment="derivatives")
     lookback = config.data.previous_session_lookback_days
     oldest_previous = TradingSession.from_config(
-        session.day - timedelta(days=lookback), config.market,
+        session.day - timedelta(days=lookback), config.market, segment="derivatives",
     )
     context = {"correlation_id": correlation_id}
     db = directory / config.storage.sqlite_path

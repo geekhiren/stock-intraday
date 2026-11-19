@@ -18,6 +18,7 @@ from orderbot.core.event_log import open_logs
 from orderbot.core.ist_time import now_ist
 from orderbot.core.state_store import open_store
 from orderbot.data.capture import capture_session, compare_with_broker, load_replay
+from orderbot.data.market_verification import verify_market_session
 from orderbot.data.movers import fixture_movers, movers_worker
 from orderbot.execution.exit_replay import replay_exits
 from orderbot.execution.replay import replay_execution
@@ -77,6 +78,7 @@ def main() -> int:
     action.add_argument("--replay-strategy-a", type=Path, metavar="FIXTURE", help="Replay Strategy A against fixtures")
     action.add_argument("--replay-paper-session", type=Path, metavar="FIXTURE", help="Run an end-to-end paper fixture session")
     action.add_argument("--real-paper-trial", type=Path, metavar="CALENDAR", help="Run an unfunded real-data paper trial")
+    action.add_argument("--verify-market-data", type=Path, metavar="CALENDAR", help="Verify real quotes and closed candles through the paper dashboard")
     action.add_argument("--replay-exits", type=Path, metavar="FIXTURE", help="Drill paper exits and kill switches")
     action.add_argument("--dashboard", action="store_true", help="Serve the local paper dashboard")
     action.add_argument("--report", type=date.fromisoformat, metavar="YYYY-MM-DD", help="Report an IST session")
@@ -100,14 +102,18 @@ def main() -> int:
         parser.error("--fixture-funding and --fixture-scenario require --replay-paper-session")
     if args.through_close and not args.real_paper_trial:
         parser.error("--through-close requires --real-paper-trial")
-    if args.session_date and not args.through_close:
-        parser.error("--session-date requires --through-close")
+    if args.session_date and not (args.through_close or args.verify_market_data):
+        parser.error("--session-date requires --through-close or --verify-market-data")
 
     try:
         config = load_config(args.config)
         if args.mode == "live":
             raise ConfigError("This build requires paper mode.")
         directory = args.config.resolve().parent
+        if args.verify_market_data:
+            result, passed = verify_market_session(config, directory, args.verify_market_data, day=args.session_date)
+            print(json.dumps(result, indent=2))
+            return 0 if passed else 1
         validate_runtime_paths(config, args.config)
         if args.check_config:
             print("Configuration valid (PAPER).")

@@ -91,7 +91,7 @@ def submit_strategy_decision(
     quote = quotes.get(signal.selection.selected_token)
     if not is_finite_decimal(spot) or spot <= 0 or quote is None:
         return skip("aborted_requote")
-    latest = revalidate_selection(signal.selection, quote, at=now, spot=spot, config=cfg.options)
+    latest = revalidate_selection(signal.selection, quote, at=now, spot=spot, config=cfg.options, market=cfg.market)
     if latest.outcome != "revalidated":
         detail["requote_reasons"] = list(latest.reasons)
         return skip("aborted_requote")

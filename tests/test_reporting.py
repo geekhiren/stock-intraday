@@ -1,5 +1,5 @@
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from threading import Thread
@@ -105,7 +105,7 @@ def test_legacy_missing_slippage_still_reconciles_and_report_runs_at_ist_cutoff(
     report = build_report(db, at.date())
     assert report["slippage"]["unavailable_orders"] == 1
     assert report["reconciliation"]["delta_paise"] == 0
-    before = parse_timestamp(f"{at.date()}T15:34:59+05:30")
+    before = datetime.combine(at.date(), CONFIG.reporting.daily_report_time, tzinfo=at.tzinfo) - timedelta(seconds=1)
     assert write_due_report(CONFIG.reporting, db, tmp_path, before) is None
     due = before + timedelta(seconds=1)
     path = write_due_report(CONFIG.reporting, db, tmp_path, due)

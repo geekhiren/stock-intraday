@@ -321,7 +321,7 @@ def test_market_feed_resubscribes_and_reports_stale():
 
 
 def test_capture_preserves_history_seed_for_mid_session_replay(tmp_path, monkeypatch):
-    session = TradingSession.from_config(date(2026, 11, 18), CONFIG.market)
+    session = TradingSession.from_config(date(2026, 11, 18), CONFIG.market, segment="derivatives")
     cache_fixture_master(tmp_path, session.day)
     clock = [session.opens_at + timedelta(minutes=2, seconds=3)]
     monkeypatch.setattr(capture, "now_ist", lambda: clock[0])

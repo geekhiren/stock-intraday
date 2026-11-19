@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, time
 from decimal import Decimal
 from math import erfc, exp, isfinite, log, sqrt
 
@@ -28,14 +28,14 @@ def _cdf(value: float) -> float:
 
 
 def implied_greeks(
-    spot: Decimal, contract: Instrument, mid: Decimal, at: datetime, config: OptionsConfig,
+    spot: Decimal, contract: Instrument, mid: Decimal, at: datetime, config: OptionsConfig, *, expiry_close: time | None = None,
 ) -> Greeks:
     if (
         contract.right not in {"CE", "PE"} or contract.expiry is None
         or not all(is_finite_decimal(value) and value > 0 for value in (spot, contract.strike, mid))
     ):
         raise GreeksError("Black-76 needs a dated call or put and positive spot, strike and premium.")
-    expiry = datetime.combine(contract.expiry, config.expiry_close, tzinfo=IST)
+    expiry = datetime.combine(contract.expiry, expiry_close or config.expiry_close, tzinfo=IST)
     years = (expiry - as_ist(at)).total_seconds() / SECONDS_IN_ACT_365F_YEAR
     if years <= 0:
         raise GreeksError("There is no time left to invert the option premium.")

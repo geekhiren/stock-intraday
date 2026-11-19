@@ -2,6 +2,8 @@
 
 OrderBOT uses Python 3.11+ and runs in paper mode. The command-line entry point initializes storage, checks SmartAPI authentication, and captures or replays market data for the NIFTY near-month futures signal series.
 
+For a developer handoff, start with the [functionality and repository map](docs/README.md), then use the [setup and operating instructions](docs/INSTRUCTIONS.md) and the [strategy and performance notes](docs/STRATEGIES.md).
+
 ```powershell
 python -m pip install -e ".[test]"
 python run.py --check-config

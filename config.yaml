@@ -9,17 +9,36 @@ paper_trial:
   history_poll_seconds: 4
   broker_candle_max_age_seconds: 45
   quote_window_wings: 8
+  market_verification_symbol: RELIANCE
+  market_verification_minutes: 5
   output_directory: var/real-paper-trials
 market:
   underlying: NIFTY
   signal_series: near_month_futures
   session_open: "09:15"
   session_close: "15:30"
+  nse_schedules:
+    - effective_on: "2026-08-03"
+      cash_continuous_close: "15:15"
+      cash_auction_end: "15:35"
+      cash_post_close_start: "15:50"
+      cash_post_close_end: "16:00"
+      derivatives_close: "15:40"
+      expiring_index_close: "15:40"
+    - effective_on: "2026-12-07"
+      cash_continuous_close: "15:30"
+      cash_auction_end: "15:45"
+      cash_post_close_start: "15:50"
+      cash_post_close_end: "16:00"
+      derivatives_close: "15:45"
+      expiring_index_close: "15:30"
 data:
   instrument_master_url: https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json
   instrument_cache_dir: var/instruments
   instrument_download_timeout_seconds: 30
   history_cache_dir: var/history
+  stock_history_span_days: 28
+  stock_baselines_fetch_missing: false
   tick_archive_dir: var/ticks
   archive_batch_rows: 256
   archive_flush_seconds: 5
@@ -165,10 +184,11 @@ kill_switch:
   volatility_move_fraction: "0.015"
   sentinel_path: var/STOP
 reporting:
+  rest_quote_max_age_seconds: 75
   dashboard_port: 18765
   refresh_seconds: 2
   alert_history_limit: 6
-  daily_report_time: "15:35"
+  daily_report_time: "15:50"
   daily_report_directory: var/reports
   feed_heartbeat_seconds: 4
   feed_status_max_age_seconds: 15

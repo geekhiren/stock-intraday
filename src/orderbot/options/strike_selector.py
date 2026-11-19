@@ -4,7 +4,7 @@ from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 
 from orderbot.broker.instruments import Instrument, InstrumentMaster
-from orderbot.core.config import OptionsConfig
+from orderbot.core.config import MarketConfig, OptionsConfig
 from orderbot.core.ist_time import as_ist
 from orderbot.core.money import is_finite_decimal
 
@@ -35,7 +35,7 @@ def _atm_strike(spot: Decimal, config: OptionsConfig) -> Decimal:
 
 def select_strike(
     master: InstrumentMaster, sessions: tuple[date, ...], quotes: Mapping[str, OptionQuote],
-    *, at: datetime, spot: Decimal, right: str, lots: int, config: OptionsConfig,
+    *, at: datetime, spot: Decimal, right: str, lots: int, config: OptionsConfig, market: MarketConfig | None = None,
 ) -> StrikeDecision:
     now = as_ist(at)
     if right not in {"CE", "PE"} or type(lots) is not int or lots <= 0:
@@ -64,7 +64,7 @@ def select_strike(
         else:
             contract = contracts[0]
             candidates.append(evaluate_candidate(
-                contract, quotes.get(contract.token), at=now, spot=spot, atm=atm, lots=lots, config=config,
+                contract, quotes.get(contract.token), at=now, spot=spot, atm=atm, lots=lots, config=config, market=market,
             ))
 
     eligible = [item for item in candidates if not item.reasons]
@@ -80,7 +80,7 @@ def select_strike(
 
 def revalidate_selection(
     selected: StrikeDecision, quote: OptionQuote | None, *, at: datetime, spot: Decimal,
-    config: OptionsConfig, lots: int | None = None,
+    config: OptionsConfig, lots: int | None = None, market: MarketConfig | None = None,
 ) -> StrikeDecision:
     if selected.outcome != "selected":
         raise ValueError("A requote needs an earlier successful selection.")
@@ -90,7 +90,7 @@ def revalidate_selection(
     now, atm = as_ist(at), _atm_strike(spot, config)
     intended_lots = selected.lots if lots is None else lots
     candidate = evaluate_candidate(
-        original.contract, quote, at=now, spot=spot, atm=atm, lots=intended_lots, config=config,
+        original.contract, quote, at=now, spot=spot, atm=atm, lots=intended_lots, config=config, market=market,
     )
     reasons = list(candidate.reasons)
     if now < selected.at or now.date() != selected.at.date():

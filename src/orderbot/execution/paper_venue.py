@@ -122,7 +122,7 @@ class PaperVenue:
 
     def fresh_book(self, quote: OptionQuote, token: str, tick: Decimal, at: datetime, *, side: str = "BUY") -> bool:
         at = as_ist(at)
-        session = TradingSession.from_config(at.date(), self.config.market)
+        session = TradingSession.from_config(at.date(), self.config.market, segment="derivatives")
         if (
             not session.opens_at <= at < session.closes_at
             or quote.token != token or not quote.bids or (side == "BUY" and not quote.asks)

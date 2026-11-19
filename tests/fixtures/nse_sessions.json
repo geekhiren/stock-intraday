@@ -1,0 +1,8 @@
+{
+  "schedules": [
+    {"day": "2026-07-31", "cash_close": "15:30", "auction_end": null, "fo_close": "15:30", "index_expiry_close": "15:30"},
+    {"day": "2026-11-19", "cash_close": "15:15", "auction_end": "15:35", "fo_close": "15:40", "index_expiry_close": "15:40"},
+    {"day": "2026-12-08", "cash_close": "15:30", "auction_end": "15:45", "fo_close": "15:45", "index_expiry_close": "15:30"}
+  ],
+  "quotes": {"now": "2026-11-19T14:00:00+05:30", "fresh": "19-Nov-2026 13:59:50", "stale": "19-Nov-2026 13:58:00", "after_cash_close": "2026-11-19T15:16:00+05:30"}
+}

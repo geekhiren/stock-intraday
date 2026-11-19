@@ -11,14 +11,13 @@ from datetime import date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 import json
 from pathlib import Path
-import re
 from threading import RLock
 
 from pydantic import ValidationError
 
 from orderbot.core.atomic_file import atomic_path
 from orderbot.core.config import Config, StocksConfig
-from orderbot.core.ist_time import IST, as_ist, from_storage, parse_timestamp, to_storage
+from orderbot.core.ist_time import as_ist, from_storage, parse_exchange_timestamp, to_storage
 from orderbot.core.money import PAISA, round_inr
 from orderbot.core.state_store import open_store
 from orderbot.data.indicators import WilderAverage
@@ -33,7 +32,6 @@ SETTING_KEYS = ("capital_inr", "risk_per_trade_pct", "max_positions", "sip_entri
                 "exit_on_vwap_cross", "watchlist_only")
 MAX_RISK_PCT = Decimal("2")  # the Settings screen cannot raise risk per trade beyond this
 MAX_SAMPLE_GAP = timedelta(seconds=150)
-EXCHANGE_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
 
 def intraday_charges(buy: Decimal, sell: Decimal, quantity: int, config: Config) -> Decimal:
@@ -159,16 +157,7 @@ class Tick:
     @classmethod
     def parse(cls, quote: dict, universe: dict[str, str]) -> "Tick":
         number = lambda key: Decimal(str(quote[key]))  # noqa: E731
-        stamp = quote["exchFeedTime"]
-        try:
-            at = parse_timestamp(stamp)
-        except ValueError:
-            match = re.fullmatch(r"([0-9]{2})-([A-Za-z]{3})-([0-9]{4}) ([0-9]{2}):([0-9]{2}):([0-9]{2})", stamp)
-            if match is None:
-                raise ValueError("Unusable SmartAPI exchange feed timestamp.") from None
-            day, month, year, hour, minute, second = match.groups()
-            at = datetime(int(year), EXCHANGE_MONTHS.index(month.title()) + 1, int(day),
-                          int(hour), int(minute), int(second), tzinfo=IST)
+        at = parse_exchange_timestamp(quote["exchFeedTime"])
         tick = cls(quote["symbolToken"], universe[quote["symbolToken"]], number("ltp"), number("open"), number("high"),
                    number("low"), number("close"), number("avgPrice"), int(quote["tradeVolume"]),
                    at, cls._levels(quote["depth"]["buy"], True), cls._levels(quote["depth"]["sell"], False))
@@ -290,8 +279,7 @@ class StockPaperTrader:
             self._last_at = None
 
     def _session_open(self, at: datetime) -> bool:
-        market = self.config.market
-        return at.weekday() < 5 and market.session_open <= at.time() <= market.session_close
+        return self.config.market.cash_phase(at) == "continuous"
 
     def _fresh(self, tick: Tick | None, now: datetime) -> bool:
         return (tick is not None and self._session_open(now) and self._session_open(tick.at)

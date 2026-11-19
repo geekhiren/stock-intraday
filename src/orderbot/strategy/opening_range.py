@@ -132,7 +132,7 @@ class StrategyB:
             return skip("liquidity", "skipped_illiquid", cause="spot_unavailable")
         right = "CE" if upward else "PE"
         selection = select_strike(self.master, self.trading_sessions, quotes, at=now, spot=spot, right=right,
-                                  lots=1, config=self.config.options)
+                                  lots=1, config=self.config.options, market=self.config.market)
         if selection.outcome != "selected":
             return skip("liquidity", "skipped_illiquid", cause=selection.outcome, expiry_reason=selection.expiry.reason,
                         candidates={str(item.strike): list(item.reasons) for item in selection.candidates})

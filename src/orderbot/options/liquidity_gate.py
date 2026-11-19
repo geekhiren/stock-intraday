@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from orderbot.broker.instruments import Instrument, NSE_DERIVATIVES
 from orderbot.broker.ws_client import Level, MarketTick
-from orderbot.core.config import OptionsConfig
+from orderbot.core.config import MarketConfig, OptionsConfig
 from orderbot.core.ist_time import as_ist
 from orderbot.core.money import is_finite_decimal
 
@@ -68,7 +68,7 @@ def _valid_levels(levels: tuple[Level, ...], tick: Decimal, *, descending: bool)
 
 def evaluate_candidate(
     contract: Instrument, quote: OptionQuote | None, *, at: datetime, spot: Decimal,
-    atm: Decimal, lots: int, config: OptionsConfig,
+    atm: Decimal, lots: int, config: OptionsConfig, market: MarketConfig | None = None,
 ) -> CandidateAudit:
     strike = contract.strike
     if (
@@ -130,7 +130,8 @@ def evaluate_candidate(
         except FreezeError:
             reasons.append("invalid_freeze")
     try:
-        greeks = implied_greeks(spot, contract, mid, now, config)
+        close = market.fo_close(contract.expiry, index_expiry=contract.expiry) if market and contract.expiry else None
+        greeks = implied_greeks(spot, contract, mid, now, config, expiry_close=close)
     except GreeksError:
         reasons.append("greeks_unavailable")
     else:

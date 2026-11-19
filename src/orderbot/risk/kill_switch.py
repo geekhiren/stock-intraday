@@ -62,7 +62,7 @@ class KillSwitch:
     def evaluate(self, at: datetime, health: Health, *, position_opened_at: datetime | None) -> str | None:
         now = as_ist(at)
         cfg = self.config.kill_switch
-        session = TradingSession.from_config(now.date(), self.config.market)
+        session = TradingSession.from_config(now.date(), self.config.market, segment="derivatives")
         if health.position_mismatch:
             return "position_mismatch"
         if health.insufficient_funds:

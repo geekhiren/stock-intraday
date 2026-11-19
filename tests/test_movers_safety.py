@@ -48,6 +48,7 @@ def test_disconnect_mid_batch_discards_results_without_killing_worker(monkeypatc
 def test_history_cooldown_stops_baseline_queue_without_saving_partial_results(tmp_path):
     client, trader = Mock(), Mock()
     scanner = scanner_for(tmp_path, client, trader)
+    scanner.config = CONFIG.model_copy(update={"data": CONFIG.data.model_copy(update={"stock_baselines_fetch_missing": True})})
     client.historical_minutes.side_effect = RateLimitError("SmartAPI cooldown")
     scanner._prepare_baselines(AT.date(), scanner._universe)
     client.historical_minutes.assert_called_once()

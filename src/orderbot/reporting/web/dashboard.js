@@ -589,6 +589,11 @@ function moverRow(mover) {
   const row = element('li');
   const name = element('div', undefined, 'mover-name');
   name.append(element('span', mover.symbol));
+  if (mover.quote && mover.quote.state !== 'fresh') {
+    const badge = element('span', quoteLabel(mover.quote), 'pill');
+    badge.title = quoteDescription(mover.quote);
+    name.append(badge);
+  }
   if (mover.setup) {
     const chip = element('span', setups[mover.setup], 'pill chip');
     chip.dataset.setup = mover.setup;
@@ -609,7 +614,9 @@ function renderMovers(movers) {
     const rows = scanned ? movers[side].map(moverRow) : [];
     byId(side).replaceChildren(...(rows.length ? rows : [element('li', scanned ? 'None right now.' : 'No scan yet.', 'muted')]));
   }
-  const status = !movers ? 'Scanner off' : movers.state === 'ok' ? `${movers.quoted} stocks · scanned ${localTime(movers.at)} IST` :
+  const status = !movers ? 'Scanner off' : movers.state === 'ok' ?
+    `${movers.quoted} stocks${movers.quote_phase ? ` · ${sessionPhase(movers.quote_phase)} · ${movers.fresh_quotes} fresh` : ''}` +
+    (movers.latest_feed_at ? ` · Latest exchange quote ${localTime(movers.latest_feed_at)} IST` : ` · Scanned ${localTime(movers.at)} IST`) :
     movers.state === 'starting' ? 'Scanner starting' : `${movers.message}${scanned ? ` · Showing ${localTime(movers.at)} IST` : ''}`;
   byId('movers-status').textContent = status;
   byId('movers-status').className = movers && movers.message ? 'negative' : '';
@@ -618,6 +625,18 @@ function renderMovers(movers) {
   byId('breadth-bar').hidden = !total;
   if (total) byId('breadth-bar').style.setProperty('--share', `${(100 * movers.advancers / total).toFixed(1)}%`);
   byId('breadth-note').textContent = scanned ? `Advancers and decliners of ${movers.quoted}` : 'Awaiting stock scan';
+}
+
+function sessionPhase(phase) {
+  return { continuous: 'Continuous session', closing_auction: 'Closing auction', post_close: 'Post-close session', closed: 'Market closed' }[phase];
+}
+
+function quoteLabel(quote) {
+  return { fresh: 'Fresh', stale: 'Stale', unknown: 'Time unavailable', market_closed: 'Market closed' }[quote.state];
+}
+
+function quoteDescription(quote) {
+  return `${quoteLabel(quote)}${quote.feed_at ? ` · Exchange ${ukDate(quote.feed_at)} ${localTime(quote.feed_at)} IST` : ''}`;
 }
 
 // -- backtest --------------------------------------------------------------------------------------
@@ -674,16 +693,27 @@ function renderJobs(events) {
 function renderChain(chain) {
   const percent = (value) => `${value > 0 ? '+' : value < 0 ? '−' : ''}${Math.abs(value).toFixed(2)}%`;
   byId('chain-spot').textContent = chain ? indian.format(chain.spot) : '—';
-  byId('chain-spot-note').textContent = chain ? `${percent(chain.spot_pct)} today` : 'Waiting for the first scan';
+  byId('chain-spot-note').textContent = chain ? `${percent(chain.spot_pct)} today${chain.spot_quote ? ` · ${quoteDescription(chain.spot_quote)}` : ''}` : 'Waiting for the first scan';
   byId('chain-spot-note').className = chain ? tone(chain.spot_pct) : '';
   byId('chain-expiry').textContent = chain ? ukDate(chain.expiry) : '—';
   byId('chain-lot').textContent = chain && chain.lot_size ? `Lot size ${chain.lot_size}` : ' ';
   byId('chain-straddle').textContent = chain && chain.straddle !== null ? price(chain.straddle) : '—';
   byId('chain-straddle-note').textContent = chain ? `Strike ${indian.format(chain.atm)}` : ' ';
   byId('chain-pcr').textContent = chain && chain.put_call_ratio !== null ? chain.put_call_ratio.toFixed(2) : '—';
-  byId('chain-status').textContent = !chain ? 'Waiting for prices' : `${chain.stale ? 'Old prices from' : 'Updated'} ${localTime(chain.at)} IST`;
-  const side = (leg, key) => (leg ? [key === 'price' ? price(leg.price) : key === 'pct' ? percent(leg.pct) : indian.format(leg.open_interest),
-    `right ${key === 'pct' ? tone(leg.pct) : ''}`] : ['—', 'right']);
+  const status = !chain ? 'Waiting for prices' : chain.market_open === false ? 'Market closed · Last snapshots' :
+    chain.total_quotes !== undefined ? `${chain.fresh_quotes} of ${chain.total_quotes} option quotes fresh` :
+      `${chain.stale ? 'Old prices from' : 'Updated'} ${localTime(chain.at)} IST`;
+  byId('chain-status').textContent = status + (chain?.latest_feed_at ? ` · Latest exchange quote ${localTime(chain.latest_feed_at)} IST` : '');
+  const side = (leg, key) => {
+    if (!leg) return ['—', 'right'];
+    if (key === 'price' && leg.quote && leg.quote.state !== 'fresh') {
+      const value = element('span', price(leg.price));
+      value.append(element('small', ` · ${quoteLabel(leg.quote)}`, 'muted'));
+      return [value, 'right', quoteDescription(leg.quote)];
+    }
+    return [key === 'price' ? price(leg.price) : key === 'pct' ? percent(leg.pct) : indian.format(leg.open_interest),
+      `right ${key === 'pct' ? tone(leg.pct) : ''}`, key === 'price' && leg.quote ? quoteDescription(leg.quote) : ''];
+  };
   renderTable('chain', (chain ? chain.strikes : []).map((row) => [
     side(row.call, 'open_interest'), side(row.call, 'pct'), side(row.call, 'price'), [indian.format(row.strike), 'right'],
     side(row.put, 'price'), side(row.put, 'pct'), side(row.put, 'open_interest'),
@@ -729,7 +759,8 @@ function render(state) {
   toggle.textContent = toggle.dataset.action === 'connect' ? 'Connect' : 'Disconnect';
   byId('broker').dataset.state = state.broker.state;
   byId('broker').title = state.broker.message || (state.broker.observed_at ? `Last price scan ${localTime(state.broker.observed_at)} IST` : '');
-  byId('session').textContent = `NIFTY · ${ukDate(state.now)}${state.fixture ? ' · Fixture replay' : ''}`;
+  const timings = state.broker.fo_close ? ` · Cash continuous until ${state.broker.cash_close} · F&O until ${state.broker.fo_close} IST` : '';
+  byId('session').textContent = `NIFTY · ${ukDate(state.now)}${state.fixture ? ' · Fixture replay' : timings}`;
   defaultBacktestDates(state.now);
   renderMovers(state.movers);
   renderStocks(state.stocks);

@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 
 IST = ZoneInfo("Asia/Kolkata")
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
 
 def require_aware(value: datetime) -> datetime:
@@ -31,6 +32,24 @@ def parse_timestamp(value: str) -> datetime:
     if not isinstance(value, str) or not re.fullmatch(pattern, value):
         raise ValueError("Expected an ISO 8601 timestamp with an explicit offset.")
     return as_ist(datetime.fromisoformat(value))
+
+
+def parse_exchange_timestamp(value: str) -> datetime:
+    """Parse a SmartAPI FULL exchange feed timestamp, whose displayed time is IST."""
+    try:
+        return parse_timestamp(value)
+    except ValueError:
+        if not isinstance(value, str):
+            raise ValueError("Missing SmartAPI exchange feed timestamp.") from None
+        match = re.fullmatch(r"([0-9]{2})-([A-Za-z]{3})-([0-9]{4}) ([0-9]{2}):([0-9]{2}):([0-9]{2})", value)
+        if match is None or match[2].title() not in _MONTHS:
+            raise ValueError("Unusable SmartAPI exchange feed timestamp.") from None
+        day, month, year, hour, minute, second = match.groups()
+        at = datetime(int(year), _MONTHS.index(month.title()) + 1, int(day),
+                      int(hour), int(minute), int(second), tzinfo=IST)
+        if at.astimezone(UTC).timestamp() == 0:
+            raise ValueError("SmartAPI returned an exchange timestamp placeholder.") from None
+        return at
 
 
 def from_storage(value: str) -> datetime:

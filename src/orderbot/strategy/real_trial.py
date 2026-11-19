@@ -88,9 +88,9 @@ def _option_window(config, master, sessions, day, price):
     return expiry.expiry, contracts
 
 
-def _warmup(config, fetch, session, sessions):
+def _warmup(config, fetch, session, sessions, *, index_expiry=None):
     previous_day = sessions[sessions.index(session.day) - 1]
-    previous_session = TradingSession.from_config(previous_day, config.market)
+    previous_session = TradingSession.from_config(previous_day, config.market, segment="derivatives", index_expiry=index_expiry)
     previous = fetch(previous_session.opens_at, previous_session.closes_at)
     end = max(session.opens_at, minute_floor(now_ist() - timedelta(seconds=config.paper_trial.finalize_delay_seconds)) - MINUTE)
     current = fetch(session.opens_at, end) if end > session.opens_at else ()
@@ -295,7 +295,7 @@ def run_real_paper_trial(config: Config, directory: Path, calendar: Path, *, thr
     day = session_date or now.date()
     if sessions != tuple(sorted(set(sessions))) or day not in sessions or sessions.index(day) == 0:
         raise ValueError("The trial needs an ordered exchange calendar including its date and the prior session.")
-    session = TradingSession.from_config(day, config.market)
+    session = TradingSession.from_config(day, config.market, segment="derivatives")
     earliest = session.opens_at - timedelta(minutes=config.data.capture_lead_minutes) if through_close else session.opens_at
     if through_close and session_date and now < earliest:
         print(f"Waiting to connect at {earliest:%Y-%m-%d %H:%M} IST", flush=True)
@@ -318,6 +318,9 @@ def run_real_paper_trial(config: Config, directory: Path, calendar: Path, *, thr
     try:
         master = load_master(config.data, config.market.underlying, session.day, directory)
         future = master.front_future(session.day)
+        session = TradingSession.from_config(day, config.market, segment="derivatives", index_expiry=future.expiry)
+        if now_ist() >= session.closes_at:
+            raise ValueError("The near-month futures contract has stopped trading for the day.")
         report["future"] = future.symbol
         client = AngelClient.for_workspace(config, directory)
         credentials = read_credentials(config.broker, env_file=directory / ".env")
@@ -340,7 +343,7 @@ def run_real_paper_trial(config: Config, directory: Path, calendar: Path, *, thr
                     raise
             return cache.get(future.token, begin, end, read)
 
-        previous, current, warm_end = _warmup(config, warm_history, session, sessions)
+        previous, current, warm_end = _warmup(config, warm_history, session, sessions, index_expiry=future.expiry)
         expiry, options = _option_window(config, master, sessions, session.day, (current or previous)[-1].close)
         report.update(weekly_expiry=expiry.isoformat(), subscribed_options=len(options), broker_seed_minutes=len(current))
         indicators = IndicatorEngine(config.data.rsi_period, config.data.atr_period)

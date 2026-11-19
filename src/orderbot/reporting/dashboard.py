@@ -163,9 +163,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if link and value["broker"]["state"] in {"disconnected", "stale"}:
                     value["broker"] = link(self.clock())
                 history = getattr(self.movers, "backtest_history", None)
+                chain = getattr(self.movers, "option_snapshot", None)
                 self._json(200, value | {"stop_token": self.stop_token, "movers": movers, "activity": recent(),
                                          "backtests": history() if history else [],
-                                         "option_chain": getattr(self.movers, "option_chain", None)})
+                                         "option_chain": chain(self.clock()) if chain else getattr(self.movers, "option_chain", None)})
         else:
             self._json(404, {"error": "Page not found."})
 
@@ -213,6 +214,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._json(400, {"error": str(exc) if isinstance(exc, (ValueError, RequestError)) else "Malformed request."})
             except DatabaseError:
                 self._json(503, {"error": "The paper journal is unavailable."})
+        elif self.path == "/api/verify-market-data":
+            verify = getattr(self.movers, "verify_market_data", None)
+            try:
+                if verify is None:
+                    raise ValueError("The live paper dashboard is required.")
+                self._json(200, verify())
+            except (ValueError, RequestError) as exc:
+                self._json(409, {"error": str(exc)})
         elif self.path == "/api/broker":
             try:
                 action = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length", 0)), 256)))["action"]

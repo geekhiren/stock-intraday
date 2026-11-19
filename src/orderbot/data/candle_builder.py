@@ -4,7 +4,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from orderbot.broker.instruments import NSE_DERIVATIVES
 from orderbot.core.config import MarketConfig
@@ -28,9 +28,20 @@ class TradingSession:
     closes_at: datetime
 
     @classmethod
-    def from_config(cls, day: date, config: MarketConfig) -> TradingSession:
+    def from_config(cls, day: date, config: MarketConfig, *,
+                    segment: Literal["cash", "derivatives"] | None = None,
+                    index_expiry: date | None = None) -> TradingSession:
+        # Imported archives and existing synthetic fixtures can still specify the baseline session.
+        close = config.session_close
+        if segment == "cash":
+            close = config.cash_close(day)
+        elif segment == "derivatives":
+            close = config.fo_close(day, index_expiry=index_expiry)
         return cls(day, datetime.combine(day, config.session_open, tzinfo=IST),
-                   datetime.combine(day, config.session_close, tzinfo=IST))
+                   datetime.combine(day, close, tzinfo=IST))
+
+    def contains(self, at: datetime) -> bool:
+        return self.opens_at <= as_ist(at) < self.closes_at
 
 
 @dataclass(frozen=True, slots=True)

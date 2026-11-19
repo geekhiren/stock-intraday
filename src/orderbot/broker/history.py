@@ -57,21 +57,31 @@ class HistoryCache:
         self.sleep = sleep
         self.jitter = jitter
 
-    def get(
-        self, token: str, start: datetime, end: datetime, fetch: Callable[[], list],
-    ) -> tuple[Candle, ...]:
+    def _target(self, token: str, start: datetime, end: datetime) -> Path:
         start, end = as_ist(start), as_ist(end)
         if not token.isascii() or not token.isdigit():
             raise HistoryError("History cache requires a numeric instrument token.")
         if start != minute_floor(start) or end != minute_floor(end) or start >= end:
             raise HistoryError("History requires an increasing range of whole minutes.")
         key = f"{start:%Y%m%d-%H%M}_{end:%Y%m%d-%H%M}.json"
-        target = self.directory / token / key
-        if target.is_file():
-            try:
-                return parse_minutes(json.loads(target.read_text(encoding="utf-8")), start, end)
-            except (json.JSONDecodeError, UnicodeError):
-                raise HistoryError("Cached SmartAPI history is unreadable.") from None
+        return self.directory / token / key
+
+    def read_cached(self, token: str, start: datetime, end: datetime) -> tuple[Candle, ...] | None:
+        target = self._target(token, start, end)
+        try:
+            return parse_minutes(json.loads(target.read_text(encoding="utf-8")), start, end)
+        except FileNotFoundError:
+            return None
+        except (json.JSONDecodeError, UnicodeError):
+            raise HistoryError("Cached SmartAPI history is unreadable.") from None
+
+    def get(
+        self, token: str, start: datetime, end: datetime, fetch: Callable[[], list],
+    ) -> tuple[Candle, ...]:
+        cached = self.read_cached(token, start, end)
+        if cached is not None:
+            return cached
+        target = self._target(token, start, end)
 
         backoff = self.config.history_backoff_seconds
         for attempt in range(self.config.history_attempts):

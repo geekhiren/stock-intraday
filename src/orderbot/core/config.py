@@ -9,7 +9,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, StringConstraints, ValidationError, model_validator
 from yaml.constructor import ConstructorError
 
-from .ist_time import IST
+from .ist_time import IST, as_ist
 
 
 class ConfigError(ValueError):
@@ -39,11 +39,22 @@ class RuntimeConfig(Section):
     timezone: Literal["Asia/Kolkata"]
 
 
+class NseSchedule(Section):
+    effective_on: date
+    cash_continuous_close: time
+    cash_auction_end: time
+    cash_post_close_start: time
+    cash_post_close_end: time
+    derivatives_close: time
+    expiring_index_close: time
+
+
 class MarketConfig(Section):
     underlying: Literal["NIFTY"]
     signal_series: Literal["near_month_futures"]
     session_open: time
     session_close: time
+    nse_schedules: tuple[NseSchedule, ...] = ()
 
     @model_validator(mode="after")
     def check_session(self):
@@ -51,7 +62,43 @@ class MarketConfig(Section):
             raise ValueError("Session times must be IST minute boundaries.")
         if self.session_open >= self.session_close:
             raise ValueError("Session open must precede session close.")
+        days = tuple(schedule.effective_on for schedule in self.nse_schedules)
+        if days != tuple(sorted(set(days))):
+            raise ValueError("NSE schedules must have increasing, unique effective dates.")
+        for schedule in self.nse_schedules:
+            if any(value.tzinfo or value.second or value.microsecond for value in schedule.model_dump().values()
+                   if isinstance(value, time)):
+                raise ValueError("NSE schedules must use IST minute boundaries.")
+            if not (self.session_open < schedule.cash_continuous_close < schedule.cash_auction_end
+                    <= schedule.cash_post_close_start < schedule.cash_post_close_end
+                    and self.session_open < schedule.expiring_index_close <= schedule.derivatives_close):
+                raise ValueError("NSE session boundaries are out of order.")
         return self
+
+    def schedule(self, day: date) -> NseSchedule | None:
+        return next((item for item in reversed(self.nse_schedules) if item.effective_on <= day), None)
+
+    def cash_close(self, day: date) -> time:
+        schedule = self.schedule(day)
+        return schedule.cash_continuous_close if schedule else self.session_close
+
+    def fo_close(self, day: date, *, index_expiry: date | None = None) -> time:
+        schedule = self.schedule(day)
+        if schedule is None:
+            return self.session_close
+        return schedule.expiring_index_close if index_expiry == day else schedule.derivatives_close
+
+    def cash_phase(self, at: datetime) -> str:
+        now = as_ist(at)
+        if now.weekday() < 5:
+            clock, schedule = now.time(), self.schedule(now.date())
+            if self.session_open <= clock < self.cash_close(now.date()):
+                return "continuous"
+            if schedule and schedule.cash_continuous_close <= clock < schedule.cash_auction_end:
+                return "closing_auction"
+            if schedule and schedule.cash_post_close_start <= clock < schedule.cash_post_close_end:
+                return "post_close"
+        return "closed"
 
 
 PositiveSeconds = Annotated[FiniteFloat, Field(strict=True, gt=0)]
@@ -65,6 +112,8 @@ class DataConfig(Section):
     instrument_cache_dir: Path
     instrument_download_timeout_seconds: PositiveSeconds
     history_cache_dir: Path
+    stock_history_span_days: Annotated[int, Field(strict=True, ge=1, le=30)]
+    stock_baselines_fetch_missing: Annotated[bool, Field(strict=True)]
     tick_archive_dir: Path
     archive_batch_rows: PositiveCount
     archive_flush_seconds: PositiveSeconds
@@ -317,6 +366,7 @@ EnvName = Annotated[str, StringConstraints(pattern=r"^[A-Z_][A-Z0-9_]*$")]
 
 
 class ReportingConfig(Section):
+    rest_quote_max_age_seconds: PositiveSeconds
     dashboard_port: Annotated[int, Field(strict=True, ge=1, le=65535)]
     refresh_seconds: PositiveSeconds
     alert_history_limit: PositiveCount
@@ -373,6 +423,8 @@ class PaperTrialConfig(Section):
     history_poll_seconds: PositiveSeconds
     broker_candle_max_age_seconds: PositiveSeconds
     quote_window_wings: PositiveCount
+    market_verification_symbol: Annotated[str, StringConstraints(pattern=r"^[A-Z0-9&-]+$")]
+    market_verification_minutes: Annotated[int, Field(strict=True, ge=1, le=30)]
     output_directory: Path
 
     @model_validator(mode="after")
@@ -408,7 +460,8 @@ class Config(Section):
             raise ValueError("The trial quote window must cover the strike selection wings.")
         if not self.market.session_open < self.exits.square_off_time < self.exits.backstop_time < self.market.session_close:
             raise ValueError("Square-off and its backstop must occur within the trading session.")
-        if self.reporting.daily_report_time <= self.market.session_close:
+        if self.reporting.daily_report_time <= max((self.market.session_close,
+                *(schedule.derivatives_close for schedule in self.market.nse_schedules))):
             raise ValueError("The daily report must be scheduled after the trading session.")
         session_day = date.min
         opening = datetime.combine(session_day, self.market.session_open, tzinfo=IST)

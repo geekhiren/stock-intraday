@@ -9,13 +9,15 @@ import json
 from pathlib import Path
 import sqlite3
 from threading import Event, RLock, Thread
-from time import monotonic, sleep
+from time import monotonic
 
 from orderbot.broker.angel_client import AngelClient, LoginError, RateLimitError, RequestError, read_credentials
-from orderbot.broker.history import HistoryCache, HistoryError, encode_minutes
+from orderbot.broker.history import HistoryCache, HistoryError, encode_minutes, parse_minutes
 from orderbot.broker.instruments import load_master
-from orderbot.core.ist_time import IST, as_ist, now_ist
-from orderbot.data.candle_builder import minute_floor
+from orderbot.core.ist_time import IST, as_ist, now_ist, parse_exchange_timestamp
+from orderbot.data.candle_builder import MINUTE, TradingSession, minute_floor
+from orderbot.data.stock_history import StockHistory
+from orderbot.data import candle_store
 from orderbot.strategy.stock_backtest import backtest
 from orderbot.core.activity import record
 from orderbot.core.atomic_file import atomic_path
@@ -26,8 +28,6 @@ SCAN_SECONDS = 60
 # if stops need to react faster than this.
 WATCH_SECONDS = 5
 TOP = 8
-HISTORY_SPAN_DAYS = 28  # one SmartAPI minute-history request; also covers the 14 sessions the baselines need
-BACKTEST_LOOKBACK_DAYS = HISTORY_SPAN_DAYS  # earlier candles that supply the previous close and the baselines
 BACKTEST_HISTORY = 20  # past runs kept for comparison
 CHAIN_WINGS = 6  # strikes shown on each side of the at-the-money strike
 LOGIN_ATTEMPTS = 3  # stop before repeated bad logins can lock the broker account
@@ -60,6 +60,7 @@ def _row(quote, universe):
         "symbol": universe[quote["symbolToken"]], "ltp": ltp, "pct": pct, "vwap": vwap, "high": high, "low": low,
         "range_position": round(min(max(position, 0), 1), 3),
         "turnover_cr": round(vwap * float(quote["tradeVolume"]) / 1e7, 1), "setup": setup,
+        "feed_timestamp": quote.get("exchFeedTime"),
     }
 
 
@@ -85,12 +86,34 @@ def fixture_movers(path: Path, at: datetime) -> dict | None:
     return rank_movers(data["quotes"], data["universe"], at) if data else None
 
 
+def quote_freshness(timestamp, at: datetime, session: TradingSession, max_age: float, *, disconnected=False) -> dict:
+    try:
+        feed = parse_exchange_timestamp(timestamp)
+    except ValueError:
+        feed = None
+    now = as_ist(at)
+    age = (now - feed).total_seconds() if feed else None
+    if now.weekday() >= 5 or not session.contains(now):
+        state = "market_closed"
+    elif disconnected:
+        state = "stale"
+    elif feed is None:
+        state = "unknown"
+    elif not session.contains(feed) or not 0 <= age <= max_age:
+        state = "stale"
+    else:
+        state = "fresh"
+    return {"state": state, "feed_at": feed.isoformat() if feed else None, "age_seconds": int(age) if age is not None else None}
+
+
 class MoversScanner:
     def __init__(self, config, directory: Path, *, client: AngelClient | None = None, clock=now_ist,
                  trader: StockPaperTrader | None = None):
         self.config, self.directory, self.clock, self.trader = config, directory, clock, trader
         self.client = client or AngelClient.for_workspace(config, directory)
+        self.stock_history = StockHistory(config, HistoryCache(config.data, directory))
         self.snapshot = {"state": "starting"}
+        self._stock_feed_timestamps = ()
         self._day = self._universe = self._credentials = self._session = None
         self._login_failures = 0
         self._baselines_for = None
@@ -100,7 +123,49 @@ class MoversScanner:
         self._connection_lock, self._generation = RLock(), 0
 
     def __call__(self) -> dict:
-        return self.snapshot
+        with self._connection_lock:
+            snapshot, timestamps = self.snapshot, self._stock_feed_timestamps
+            disconnected = self.paused or self._session is None or snapshot["state"] != "ok"
+        if "at" not in snapshot:
+            return snapshot
+        at = as_ist(self.clock())
+        session = TradingSession.from_config(at.date(), self.config.market, segment="cash")
+        age_limit = self.config.reporting.rest_quote_max_age_seconds
+        quote = partial(quote_freshness, at=at, session=session, max_age=age_limit, disconnected=disconnected)
+        fresh = [quote(stamp) for stamp in timestamps]
+        updated = max((item["feed_at"] for item in fresh if item["feed_at"]), default=None)
+        return snapshot | {
+            "fresh_quotes": sum(item["state"] == "fresh" for item in fresh),
+            "quote_phase": self.config.market.cash_phase(at),
+            "latest_feed_at": updated,
+            **{side: [row | {"quote": quote(row.get("feed_timestamp"))} for row in snapshot[side]]
+               for side in ("gainers", "losers")},
+        }
+
+    def option_snapshot(self, at: datetime) -> dict | None:
+        with self._connection_lock:
+            chain = self.option_chain
+            disconnected = self.paused or self._session is None or (chain and chain.get("stale"))
+        if not chain:
+            return None
+        now = as_ist(at)
+        market = self.config.market
+        expiry = date.fromisoformat(chain["expiry"])
+        session = TradingSession.from_config(now.date(), market, segment="derivatives", index_expiry=expiry)
+        spot_session = TradingSession.from_config(now.date(), market)
+        limit = self.config.reporting.rest_quote_max_age_seconds
+        spot = quote_freshness(chain.get("spot_timestamp"), now, spot_session, limit, disconnected=disconnected)
+        strikes = []
+        for row in chain["strikes"]:
+            strikes.append(row | {side: row[side] | {"quote": quote_freshness(
+                row[side].get("feed_timestamp"), now, session, limit, disconnected=disconnected)}
+                if row[side] else None for side in ("call", "put")})
+        legs = [leg["quote"] for row in strikes for leg in (row["call"], row["put"]) if leg]
+        latest = max((leg["feed_at"] for leg in legs if leg["feed_at"]), default=None)
+        fresh = sum(leg["state"] == "fresh" for leg in legs)
+        return chain | {"strikes": strikes, "spot_quote": spot, "latest_feed_at": latest, "fresh_quotes": fresh,
+                        "total_quotes": len(legs), "stale": not legs or fresh != len(legs),
+                        "market_open": now.weekday() < 5 and session.contains(now), "close_at": session.closes_at.isoformat()}
 
     def _check(self, generation: int) -> None:
         with self._connection_lock:
@@ -122,13 +187,15 @@ class MoversScanner:
         return [quote for start in range(0, len(tokens), size) for quote in self._fetch(
             generation, self.client.quotes, exchange, tokens[start:start + size])]
 
-    def scan_once(self, generation: int | None = None) -> None:
+    def scan_once(self, generation: int | None = None, *, refresh_cash=True) -> None:
         with self._connection_lock:
             generation = self._generation if generation is None else generation
             self._check(generation)
             session = self._session
         now = as_ist(self.clock())
         if self._day != now.date():
+            if self._day is not None:
+                session = None  # SmartAPI's data session is dated to the prior IST day.
             self._master = load_master(self.config.data, self.config.market.underlying, now.date(), self.directory)
             cache = self.directory / self.config.data.instrument_cache_dir / f"instruments-{now.date().isoformat()}.json"
             self._universe = stock_universe(json.loads(cache.read_text(encoding="utf-8")))
@@ -144,20 +211,22 @@ class MoversScanner:
             self._baselines_for = now.date()
             Thread(target=self._prepare_baselines, args=(now.date(), dict(self._universe), generation), name="orderbot-baselines",
                    daemon=True).start()
-        quotes = self._quotes(generation, "NSE", sorted(self._universe))
-        at = as_ist(self.clock())
-        with self._connection_lock:
-            self._check(generation)
-            self.snapshot = rank_movers(quotes, self._universe, at)
-            record("Stock scan", f"Scanned {self.snapshot['quoted']} stocks · {self.snapshot['advancers']} up, "
-                                 f"{self.snapshot['decliners']} down")
-            if self.trader is not None:
-                before = self.trader.status
-                self.trader.on_scan(quotes, self._universe, at)
-                if self.trader.status != before:
-                    record("Paper trader", self.trader.status)
+        if refresh_cash:
+            quotes = self._quotes(generation, "NSE", sorted(self._universe))
+            at = as_ist(self.clock())
+            with self._connection_lock:
+                self._check(generation)
+                self.snapshot = rank_movers(quotes, self._universe, at)
+                self._stock_feed_timestamps = tuple(row.get("exchFeedTime") for row in quotes)
+                record("Stock scan", f"Scanned {self.snapshot['quoted']} stocks · {self.snapshot['advancers']} up, "
+                                     f"{self.snapshot['decliners']} down")
+                if self.trader is not None:
+                    before = self.trader.status
+                    self.trader.on_scan(quotes, self._universe, at)
+                    if self.trader.status != before:
+                        record("Paper trader", self.trader.status)
         try:
-            chain = self._option_chain(at, generation)
+            chain = self._option_chain(as_ist(self.clock()), generation)
         except (_Disconnected, RateLimitError):
             raise
         except (RequestError, KeyError, IndexError, TypeError, ValueError):
@@ -179,25 +248,26 @@ class MoversScanner:
         """Give the trader each stock's 14-day ATR and average opening volume and the day's watchlist, from a
         per-day file or SmartAPI history."""
         stocks, market = self.config.stocks, self.config.market
-        target = self.directory / self.config.data.history_cache_dir / f"stock-baselines-{day.isoformat()}.json"
+        target = self.directory / self.config.data.history_cache_dir / f"stock-baselines-regular-{day.isoformat()}.json"
         try:
             saved = json.loads(target.read_text(encoding="utf-8"))
             found, watchlist = saved["baselines"], saved["watchlist"]
             record("14-day history", f"Loaded today's saved figures for {len(found)} stocks")
         except (OSError, ValueError, KeyError, TypeError):
             found, history = {}, {}
-            cache = HistoryCache(self.config.data, self.directory)
-            record("14-day history", f"Fetching minute history for {len(universe)} stocks")
+            record("14-day history", f"Loading local minute history for {len(universe)} stocks")
             end = datetime.combine(day, market.session_open, IST)
-            start = end - timedelta(days=HISTORY_SPAN_DAYS)
+            start = end - timedelta(days=self.config.data.stock_history_span_days)
             for count, (token, symbol) in enumerate(sorted(universe.items(), key=lambda item: item[1]), start=1):
                 self._check(generation)
                 self.trader.baseline_status = f"Preparing 14-day history · {count} of {len(universe)} stocks"
                 if count % 25 == 0:
                     record("14-day history", f"{count} of {len(universe)} stocks done")
                 try:
-                    candles = cache.get(token, start, end, lambda: self._fetch(
-                        generation, self.client.historical_minutes, "NSE", token, start, end))
+                    fetch = None
+                    if self.config.data.stock_baselines_fetch_missing:
+                        fetch = lambda since, until: self._stock_minutes(generation, token, since, until)
+                    candles = self.stock_history.get(symbol, token, start, end, fetch)
                 except HistoryError as exc:
                     record("14-day history", f"{symbol}: {exc}", error=True)
                     continue
@@ -230,45 +300,115 @@ class MoversScanner:
                 quote = quotes[token]
                 rows.setdefault(float(option.strike), {})[option.right] = {
                     "price": float(quote["ltp"]), "pct": float(quote["percentChange"]),
-                    "open_interest": int(quote["opnInterest"]), "volume": int(quote["tradeVolume"])}
+                    "open_interest": int(quote["opnInterest"]), "volume": int(quote["tradeVolume"]),
+                    "feed_timestamp": quote.get("exchFeedTime")}
         strikes = [{"strike": strike, "call": rows[strike].get("CE"), "put": rows[strike].get("PE")} for strike in sorted(rows)]
         calls = sum(row["call"]["open_interest"] for row in strikes if row["call"])
         puts = sum(row["put"]["open_interest"] for row in strikes if row["put"])
         money = rows.get(atm, {})
         return {
-            "at": as_ist(at).isoformat(), "spot": spot, "spot_pct": float(index["percentChange"]), "expiry": expiry.isoformat(),
+            "at": as_ist(self.clock()).isoformat(), "spot": spot, "spot_pct": float(index["percentChange"]),
+            "spot_timestamp": index.get("exchFeedTime"), "expiry": expiry.isoformat(),
             "atm": atm, "lot_size": next(iter(wanted.values())).lot_size if wanted else None, "strikes": strikes,
             "straddle": money["CE"]["price"] + money["PE"]["price"] if "CE" in money and "PE" in money else None,
             "put_call_ratio": round(puts / calls, 2) if calls else None, "stale": False,
         }
+
+    def _stock_minutes(self, generation, token, start, end):
+        return self._fetch(generation, self.client.historical_minutes, "NSE", token, start, end)
+
+    def verify_market_data(self) -> dict:
+        """Sample real NSE and NFO data through the running dashboard's shared SmartAPI session."""
+        config, now = (self.trader.config if self.trader else self.config), as_ist(self.clock())
+        if config.runtime.mode != "paper" or config.runtime.live_enabled or any(
+                budget.capital_inr is not None or budget.risk_per_trade_pct is not None
+                for budget in (config.risk, config.stocks)):
+            raise ValueError("Market verification requires paper mode with both budgets unset.")
+        cash = TradingSession.from_config(now.date(), config.market, segment="cash")
+        if now.weekday() >= 5 or not cash.contains(now):
+            raise ValueError("The verification requires the cash and F&O regular sessions to be open.")
+        settings = config.paper_trial
+        end = minute_floor(now - timedelta(seconds=settings.finalize_delay_seconds))
+        start = end - settings.market_verification_minutes * MINUTE
+        if start < cash.opens_at:
+            raise ValueError("Wait until the closed-candle verification window is available.")
+        with self._connection_lock:
+            generation, master, universe = self._generation, self._master, self._universe
+            if self.paused or not self._session or not master or not universe or self._day != now.date():
+                raise ValueError("Wait for today's first connected stock scan.")
+        name = settings.market_verification_symbol
+        stock = next((token for token, symbol in universe.items() if symbol == name), None)
+        if stock is None:
+            raise ValueError(f"{name} is unavailable in the current instrument master.")
+        future = master.front_future(now.date())
+        report = {"mode": "PAPER", "risk_configured": False, "checked_at": now.isoformat(),
+                  "quotes": {}, "candles": {}, "issues": []}
+        cash_rows = {row["symbolToken"]: row for row in self._quotes(generation, "NSE", [stock, master.spot.token])}
+        if master.spot.token not in cash_rows:
+            raise ValueError("Angel One did not return NIFTY spot for the options probe.")
+        spot = float(cash_rows[master.spot.token]["ltp"])
+        expiry = min(item.expiry for item in master.options if item.expiry >= now.date())
+        listed = [item for item in master.options if item.expiry == expiry]
+        strike = min((item.strike for item in listed), key=lambda value: abs(float(value) - spot))
+        legs = [item for item in listed if item.strike == strike]
+        futures_tokens = [future.token, *(item.token for item in legs)]
+        fo_rows = {row["symbolToken"]: row for row in self._quotes(generation, "NFO", futures_tokens)}
+        # Evaluate each response at receive time. A recent API fetch never refreshes the exchange timestamp.
+        received = as_ist(self.clock())
+        targets = [(name, stock, cash_rows, cash), ("NIFTY spot", master.spot.token, cash_rows,
+                    TradingSession.from_config(now.date(), config.market))]
+        targets += [(item.symbol, item.token, fo_rows, TradingSession.from_config(
+                    now.date(), config.market, segment="derivatives", index_expiry=item.expiry)) for item in (future, *legs)]
+        for symbol, token, rows, window in targets:
+            row = rows.get(token)
+            state = quote_freshness(row.get("exchFeedTime") if row else None, received, window,
+                                    config.stocks.max_quote_age_seconds)
+            report["quotes"][symbol] = state | {"ltp": row.get("ltp") if row else None}
+            if not row or state["state"] != "fresh":
+                report["issues"].append(f"{symbol}: {'missing quote' if not row else state['state']}")
+        expected = {start + step * MINUTE for step in range(settings.market_verification_minutes)}
+        for symbol, exchange, token in ((name, "NSE", stock), (future.symbol, "NFO", future.token)):
+            try:
+                raw = self._fetch(generation, self.client.historical_minutes, exchange, token, start, end)
+                bars = {bar.at: bar for bar in parse_minutes(raw, start, end)}
+                local = {bar.at: bar for bar in parse_minutes(candle_store.load(symbol, now.date(), now.date()), start, end)}
+            except (RateLimitError, _Disconnected):
+                raise
+            except (RequestError, HistoryError, OSError, ValueError) as exc:
+                report["issues"].append(f"{symbol} history: {exc}" if isinstance(exc, (RequestError, HistoryError))
+                                        else f"{symbol} history: local data unavailable or malformed")
+                continue
+            overlap = bars.keys() & local.keys()
+            missing = [stamp.isoformat() for stamp in sorted(expected - bars.keys())]
+            mismatches = [stamp.isoformat() for stamp in sorted(overlap) if bars[stamp] != local[stamp]]
+            report["candles"][symbol] = {"source": "Angel One ONE_MINUTE", "start": start.isoformat(),
+                                          "end_exclusive": end.isoformat(), "valid": len(bars), "missing": missing,
+                                          "local_overlap": len(overlap), "local_mismatches": mismatches}
+            if missing or mismatches:
+                report["issues"].append(f"{symbol} history: {len(missing)} missing, {len(mismatches)} local mismatches")
+        return report
 
     def trade_chart(self, trade_id: int) -> dict:
         """Minute closes of the session of one paper trade, with its entry, stop, target and exit."""
         trade = self.trader.trade(trade_id) if self.trader else None
         with self._connection_lock:
             generation, session = self._generation, self._session
-        if trade is None or session is None:
-            raise ValueError("That trade or the broker session is not available.")
+        if trade is None:
+            raise ValueError("That stock trade is not available.")
         day, market = date.fromisoformat(trade["session_day"]), self.config.market
         start = datetime.combine(day, market.session_open, IST)
-        end = min(datetime.combine(day, market.session_close, IST), minute_floor(self.clock()))
-        for attempt in range(4):
-            try:
-                rows = self._fetch(generation, self.client.historical_minutes, "NSE", trade["token"], start, end)
-                break
-            except RateLimitError:
-                raise
-            except RequestError as exc:
-                if not exc.retryable or attempt == 3:
-                    raise
-                sleep(1 + 2 * attempt)
+        end = min(datetime.combine(day, market.cash_close(day), IST), minute_floor(self.clock()))
+        fetch = (lambda since, until: self._stock_minutes(generation, trade["token"], since, until)) if session else None
+        rows = self.stock_history.get(trade["symbol"], trade["token"], start, end, fetch)
+        if not rows:
+            raise ValueError("No closed stock candles are available for that trade.")
         clock = lambda stamp: as_ist(datetime.fromisoformat(stamp)).strftime("%H:%M") if stamp else None  # noqa: E731
         return {
             "symbol": trade["symbol"], "day": trade["session_day"], "strategy": trade["strategy"], "side": trade["side"],
             "quantity": trade["quantity"], "entry": trade["entry_price"], "stop": trade["stop"], "target": trade["target"] or None,
             "exit": trade["exit_price"], "exit_reason": trade["exit_reason"], "net_paise": trade["net_paise"],
             "entry_at": clock(trade["entry_at_utc"]), "exit_at": clock(trade["exit_at_utc"]),
-            "points": [[row[0][11:16], float(row[4])] for row in rows],
+            "points": [[row.at.strftime("%H:%M"), float(row.close)] for row in rows],
         }
 
     def backtest(self, symbols: list[str], start: date, end: date) -> dict:
@@ -278,32 +418,24 @@ class MoversScanner:
             raise ValueError("Set stock paper capital and risk per trade before running a backtest.")
         with self._connection_lock:
             generation, session, universe = self._generation, self._session, self._universe
-        if session is None or not universe:
-            raise ValueError("The broker session is not ready yet. Try again after the first stock scan.")
-        tokens = {name: token for token, name in universe.items()}
-        unknown = [symbol for symbol in symbols if symbol not in tokens]
+        tokens = {name: token for token, name in (universe or {}).items()}
+        known = set(tokens) | set(candle_store.symbols())
+        unknown = [symbol for symbol in symbols if symbol not in known]
         if unknown:
             raise ValueError("Not an F&O stock symbol: " + ", ".join(unknown) + ".")
         market = self.config.market
         now = minute_floor(self.clock())
-        begin = datetime.combine(start - timedelta(days=BACKTEST_LOOKBACK_DAYS), market.session_open, IST)
-        finish = min(datetime.combine(end, market.session_close, IST), now)
-        today = datetime.combine(now.date(), market.session_open, IST)
-        # Past sessions are cached on disk under a stable key; today's still-growing part is fetched separately.
-        past, spans = min(finish, today), []
-        while begin < past:  # each request stays inside SmartAPI's minute-history limit
-            spans.append((begin, min(begin + timedelta(days=HISTORY_SPAN_DAYS), past)))
-            begin = spans[-1][1]
-        if finish > today:
-            spans.append((today, finish))
-        cache, candles = HistoryCache(self.config.data, self.directory), {}
+        begin = datetime.combine(start - timedelta(days=self.config.data.stock_history_span_days), market.session_open, IST)
+        finish = min(datetime.combine(end, market.cash_close(end), IST), now)
+        candles = {}
         record("Backtest", f"Started · {len(symbols)} stocks, {start:%d/%m/%Y} to {end:%d/%m/%Y}")
         for symbol in symbols:
-            candles[symbol] = [row for since, until in spans for row in encode_minutes(cache.get(
-                tokens[symbol], since, until, lambda since=since, until=until: self._fetch(
-                    generation, self.client.historical_minutes, "NSE", tokens[symbol], since, until)))]
-            record("Backtest", f"Fetched candles for {symbol} ({len(candles)} of {len(symbols)})")
-        self._check(generation)
+            token = tokens.get(symbol)
+            fetch = (lambda since, until: self._stock_minutes(generation, token, since, until)) if session and token else None
+            candles[symbol] = encode_minutes(self.stock_history.get(symbol, token, begin, finish, fetch))
+            if not candles[symbol]:
+                raise ValueError(f"No stock candle data is available for {symbol} in that range.")
+            record("Backtest", f"Loaded candles for {symbol} ({len(candles)} of {len(symbols)})")
         result = backtest(config, candles, start)
         record("Backtest", f"Finished · {len(result['trades'])} trades over {result['sessions']} sessions")
         self._remember(result, config)
@@ -346,17 +478,20 @@ class MoversScanner:
     def _market_open(self, now: datetime) -> bool:
         now = as_ist(now)
         market = self.config.market
-        return now.weekday() < 5 and market.session_open <= now.time() <= market.session_close
+        return now.weekday() < 5 and market.session_open <= now.time() < market.fo_close(now.date())
 
     def connection(self, at: datetime) -> dict:
         """The broker link as the dashboard shows it."""
         state = ("paused" if self.paused else "rate_limited" if self.snapshot.get("state") == "rate_limited" else
                  "connecting" if self.snapshot.get("state") == "starting" else
                  "connected" if self._session is not None else "disconnected")
-        seen = self.snapshot.get("at")
+        seen = max(filter(None, (self.snapshot.get("at"), (self.option_chain or {}).get("at"))), default=None)
         if state == "connected" and self._market_open(at) and seen and (as_ist(at) - datetime.fromisoformat(seen)).total_seconds() > 180:
             state = "stale"
+        now, market = as_ist(at), self.config.market
         return {"state": state, "observed_at": seen, "market_open": self._market_open(at), "controllable": True,
+                "cash_phase": market.cash_phase(now), "cash_close": market.cash_close(now.date()).strftime("%H:%M"),
+                "fo_close": market.fo_close(now.date()).strftime("%H:%M"),
                 "message": self.snapshot.get("message") if state in {"paused", "disconnected", "rate_limited"} else None}
 
     def disconnect(self) -> None:
@@ -383,12 +518,13 @@ class MoversScanner:
         while not stopped.is_set():
             now = self.clock()
             with self._connection_lock:
-                should_scan = not self.paused and (self._market_open(now) or "at" not in self.snapshot or self._force)
+                force = self._force or "at" not in self.snapshot
+                should_scan = not self.paused and (self._market_open(now) or force)
                 self._force = False
                 generation = self._generation
             if should_scan:
                 try:
-                    self.scan_once(generation)
+                    self.scan_once(generation, refresh_cash=force or self.config.market.cash_phase(now) == "continuous")
                 except _Disconnected:
                     pass
                 except (LoginError, RequestError, sqlite3.Error, OSError, ValueError) as exc:
@@ -417,7 +553,8 @@ class MoversScanner:
     def _watch_positions(self) -> None:
         """Between scans, check the stops and targets of open paper positions against fresh quotes."""
         with self._connection_lock:
-            if self.trader is None or self._session is None or self.paused or not self._market_open(self.clock()):
+            if (self.trader is None or self._session is None or self.paused
+                    or self.config.market.cash_phase(self.clock()) != "continuous"):
                 return
             generation = self._generation
         try:

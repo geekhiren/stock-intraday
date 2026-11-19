@@ -116,7 +116,8 @@ class PaperExecutor:
                 return skip(blocked)
             if selection.outcome != "selected":
                 return skip("no_selected_strike")
-            current = revalidate_selection(selection, quote, at=at, spot=spot, config=self.config.options)
+            current = revalidate_selection(selection, quote, at=at, spot=spot, config=self.config.options,
+                                           market=self.config.market)
             if current.outcome != "revalidated":
                 return skip("aborted_requote")
             candidate = current.candidates[0]
@@ -129,7 +130,8 @@ class PaperExecutor:
                 return skip(str(decision.reason))
 
             current = revalidate_selection(
-                selection, quote, at=at, spot=spot, lots=decision.sizing.lots, config=self.config.options,
+                selection, quote, at=at, spot=spot, lots=decision.sizing.lots,
+                config=self.config.options, market=self.config.market,
             )
             if current.outcome != "revalidated":
                 return skip("aborted_requote")

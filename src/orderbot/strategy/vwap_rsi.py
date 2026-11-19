@@ -126,7 +126,7 @@ class StrategyA:
             return skip("liquidity", "skipped_illiquid", cause="spot_unavailable")
         selection = select_strike(
             self.master, self.trading_sessions, quotes, at=now, spot=spot, right=right, lots=1,
-            config=self.config.options,
+            config=self.config.options, market=self.config.market,
         )
         if selection.outcome != "selected":
             return skip("liquidity", "skipped_illiquid", cause=selection.outcome,

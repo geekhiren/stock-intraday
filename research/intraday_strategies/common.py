@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from itertools import groupby
 
-from orderbot.core.config import Config
+from orderbot.core.config import Config, MarketConfig
 from orderbot.core.ist_time import parse_timestamp
 from orderbot.strategy.stock_paper import intraday_charges
 
@@ -86,13 +86,14 @@ def _aggregate(minutes: list[Bar], size: int) -> list[Bar]:
     return out
 
 
-def build_days(rows: list, sizes=(1, 5, 15)) -> list[Day]:
+def build_days(rows: list, sizes=(1, 5, 15), *, market: MarketConfig | None = None) -> list[Day]:
     """rows: SmartAPI one-minute candles [timestamp, open, high, low, close, volume], oldest first."""
     days: list[Day] = []
     for at, opened, high, low, close, volume in sorted(
             ((parse_timestamp(stamp), *values) for stamp, *values in rows), key=lambda item: item[0]):
         clock = at.strftime("%H:%M")
-        if at.second or at.microsecond or not "09:15" <= clock < "15:30":
+        in_session = market.cash_phase(at) == "continuous" if market else "09:15" <= clock < "15:30"
+        if at.second or at.microsecond or not in_session:
             continue
         day = at.date().isoformat()
         if not days or days[-1].date != day:
