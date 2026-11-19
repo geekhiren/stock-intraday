@@ -125,6 +125,34 @@ input:focus { border-color: var(--brand); }
 .gate-grid .gate-state[data-status="pass"] { background: var(--good-soft); }
 .gate-grid .gate-state[data-status="fail"] { background: var(--bad-soft); }
 
+/* charts: one y-axis, 2px lines, hairline grid, text in text tokens (never the series colour) */
+.chart { position: relative; margin-top: 10px; min-height: 60px; }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.chart .grid { stroke: var(--line); stroke-width: 1; }
+.chart .zero { stroke: var(--line-2); stroke-width: 1; }
+.chart .series { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.chart .dot { stroke: #fff; stroke-width: 2; }
+.chart .reference { stroke-width: 1; }
+.chart .crosshair { stroke: var(--faint); stroke-width: 1; }
+.chart text { font-size: 11px; fill: var(--dim); font-variant-numeric: tabular-nums; }
+.chart text.label { fill: var(--text); font-weight: 600; }
+.chart .tip { position: absolute; top: 0; pointer-events: none; background: var(--frame); color: var(--frame-text); border-radius: var(--r); padding: 8px 12px; font-size: 12px; white-space: nowrap; z-index: 1; }
+.chart .tip b { display: block; font-weight: 600; margin-bottom: 2px; }
+.chart .tip div { display: flex; align-items: center; gap: 8px; }
+.chart .tip i, .legend i { display: inline-block; width: 14px; height: 2px; border-radius: 2px; background: var(--key); }
+.chart .tip span { margin-left: auto; padding-left: 14px; font-variant-numeric: tabular-nums; font-weight: 600; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 10px; font-size: 12px; color: var(--dim); }
+.legend span { display: inline-flex; align-items: center; gap: 7px; }
+.linklike { border: 0; padding: 0; background: none; font-weight: 600; color: var(--brand-deep); cursor: pointer; text-decoration: underline; text-decoration-color: var(--brand-line); text-underline-offset: 3px; }
+.linklike:hover { color: var(--brand-ink); }
+dialog { border: 1px solid var(--line); background: #fff; border-radius: var(--r-lg); padding: 0; width: min(760px, calc(100vw - 32px)); color: var(--text); }
+dialog::backdrop { background: rgba(14, 12, 11, .42); }
+.dlg { padding: 24px; display: flex; flex-direction: column; gap: 12px; }
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
+.facts div { background: var(--muted); border-radius: var(--r); padding: 9px 12px; }
+.facts dt { font-size: 12px; font-weight: 600; color: var(--dim); }
+.facts dd { margin-top: 2px; font-weight: 600; color: var(--brand-ink); font-variant-numeric: tabular-nums; }
+
 /* tables */
 .table-scroll { overflow-x: auto; margin-top: 10px; }
 table { width: 100%; border-collapse: collapse; text-align: left; }

@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from secrets import token_urlsafe
 from sqlite3 import Error as DatabaseError
+from urllib.parse import parse_qs, urlsplit
 
 from orderbot.broker.angel_client import RequestError
 from orderbot.core.activity import recent, record
@@ -85,7 +86,8 @@ def status_snapshot(config: Config, path: Path, at: datetime, *, fixture: bool) 
     return {
         "mode": "PAPER", "fixture": fixture, "now": now.isoformat(), "broker": broker,
         "halt": kill["reason"] if kill is not None else ledger.halts.get(now.date()),
-        "stop_latched": kill is not None, "positions": positions,
+        "stop_latched": kill is not None, "resumable": kill is not None and kill["reason"] == "dashboard_stop",
+        "positions": positions,
         "daily_loss_limit": exact_paise(round_inr(loss_limit)) if loss_limit is not None else None,
         "daily_loss_limit_reached": loss_limit is not None and report["net_paise"] * PAISA <= -loss_limit,
         "risk_configured": available is not None and config.risk.risk_per_trade_pct is not None,
@@ -104,9 +106,9 @@ _STATIC = {"/": ("index.html", "text/html"), "/dashboard.css": ("dashboard.css",
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
-    def __init__(self, *args, config, path, clock, fixture, stop_token, movers, stocks, backtest, **kwargs):
+    def __init__(self, *args, config, path, clock, fixture, stop_token, movers, stocks, backtest, chart, **kwargs):
         self.config, self.db, self.clock, self.fixture, self.stop_token = config, path, clock, fixture, stop_token
-        self.movers, self.stocks, self.backtest = movers, stocks, backtest
+        self.movers, self.stocks, self.backtest, self.chart = movers, stocks, backtest, chart
         super().__init__(*args, **kwargs)
 
     @property
@@ -139,6 +141,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if name == "index.html":
                 data = data.replace(b"{{refresh_seconds}}", str(self.config.reporting.refresh_seconds).encode("ascii"))
             self._send(200, kind, data)
+        elif self.path.startswith("/api/stock-chart?"):
+            try:
+                if self.chart is None:
+                    raise ValueError("Trade charts are off in this session.")
+                self._json(200, self.chart(int(parse_qs(urlsplit(self.path).query)["trade_id"][0])))
+            except (ValueError, KeyError, IndexError) as exc:
+                self._json(400, {"error": str(exc) if isinstance(exc, ValueError) and not isinstance(exc, UnicodeError) else "Malformed request."})
+            except DatabaseError:
+                self._json(503, {"error": "The paper journal is unavailable."})
         elif self.path == "/api/status":
             try:
                 value = status_snapshot(self.config, self.db, self.clock(), fixture=self.fixture)
@@ -191,6 +202,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._json(400, {"error": str(exc) if isinstance(exc, (ValueError, RequestError)) else "Malformed request."})
             except DatabaseError:
                 self._json(503, {"error": "The paper journal is unavailable."})
+        elif self.path == "/api/resume":
+            try:
+                resumed = ExitStore(self.db).resume(self.clock())
+            except (DatabaseError, ValueError):
+                self._json(503, {"error": "Resume could not be recorded."})
+            else:
+                if resumed:
+                    record("Paper trader", "Trading resumed from the dashboard")
+                self._json(200, {"resumed": resumed})
         elif self.path != "/api/stop":
             self._json(404, {"error": "Page not found."})
         else:
@@ -208,10 +228,10 @@ class _SingleServer(ThreadingHTTPServer):
 
 
 def make_server(config: Config, path: Path, *, clock=now_ist, fixture=False, port=None, movers=None,
-                stocks=None, backtest=None) -> ThreadingHTTPServer:
+                stocks=None, backtest=None, chart=None) -> ThreadingHTTPServer:
     """`movers()` returns the stock scan, `stocks` is the stock paper trader and `backtest(symbols, start, end)` replays history."""
     if config.runtime.mode != "paper" or config.runtime.live_enabled:
         raise ValueError("The dashboard in this build requires paper mode.")
     handler = partial(DashboardHandler, config=config, path=path, clock=clock, fixture=fixture,
-                      stop_token=token_urlsafe(), movers=movers, stocks=stocks, backtest=backtest)
+                      stop_token=token_urlsafe(), movers=movers, stocks=stocks, backtest=backtest, chart=chart)
     return _SingleServer(("127.0.0.1", config.reporting.dashboard_port if port is None else port), handler)

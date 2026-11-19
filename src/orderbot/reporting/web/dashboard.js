@@ -105,6 +105,171 @@ function showPage() {
 }
 window.addEventListener('hashchange', showPage);
 showPage();
+// A link such as #trade-12 opens that trade's chart directly.
+window.addEventListener('load', () => { const linked = /^#trade-(\d+)$/.exec(location.hash); if (linked) showTrade(linked[1]); });
+
+// -- charts ----------------------------------------------------------------------------------------
+// Fixed colour per strategy (categorical order validated for colour-blind separation on a white surface).
+const seriesColors = { all: '#2a78d6', sip: '#eb6834', orb: '#1baf7a', manual: '#eda100', vwap: '#e87ba4' };
+const SVG = 'http://www.w3.org/2000/svg';
+
+function svg(tag, attributes, text) {
+  const node = document.createElementNS(SVG, tag);
+  for (const [name, value] of Object.entries(attributes || {})) node.setAttribute(name, value);
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+// One y-axis line chart. series: [{name, color, values}], references: [{value, label, color}],
+// markers: [{index, value, label}]. Hovering shows a crosshair and one tooltip listing every series.
+function lineChart(container, { labels, series, references = [], markers = [], format, zero = false }) {
+  const width = Math.max(container.clientWidth, 320);
+  const height = 240;
+  const pad = { left: 8, right: 96, top: 12, bottom: 22 };
+  const all = [...series.flatMap((item) => item.values), ...references.map((item) => item.value), ...(zero ? [0] : [])]
+    .filter((value) => value !== null && Number.isFinite(value));
+  let low = Math.min(...all);
+  let high = Math.max(...all);
+  if (low === high) { low -= 1; high += 1; }
+  const room = (high - low) * 0.08;
+  low -= room; high += room;
+  const x = (index) => pad.left + (labels.length > 1 ? index / (labels.length - 1) : 0.5) * (width - pad.left - pad.right);
+  const y = (value) => pad.top + (1 - (value - low) / (high - low)) * (height - pad.top - pad.bottom);
+  const root = svg('svg', { viewBox: `0 0 ${width} ${height}`, role: 'img' });
+  for (const step of [0, 0.5, 1]) {
+    const value = low + room + step * (high - low - 2 * room);
+    root.append(svg('line', { class: 'grid', x1: pad.left, x2: width - pad.right, y1: y(value), y2: y(value) }),
+      svg('text', { x: width - pad.right + 8, y: y(value) + 4 }, format(value)));
+  }
+  if (zero && low < 0 && high > 0) root.append(svg('line', { class: 'zero', x1: pad.left, x2: width - pad.right, y1: y(0), y2: y(0) }));
+  root.append(svg('text', { x: pad.left, y: height - 4 }, labels[0]),
+    svg('text', { x: width - pad.right, y: height - 4, 'text-anchor': 'end' }, labels[labels.length - 1]));
+  for (const reference of references) {
+    root.append(svg('line', { class: 'reference', stroke: reference.color, x1: pad.left, x2: width - pad.right, y1: y(reference.value), y2: y(reference.value) }),
+      svg('text', { class: 'label', x: pad.left + 4, y: y(reference.value) - 4 }, reference.label));
+  }
+  for (const item of series) {
+    const points = item.values.map((value, index) => (value === null ? null : `${x(index).toFixed(1)},${y(value).toFixed(1)}`)).filter(Boolean);
+    if (points.length > 1) root.append(svg('polyline', { class: 'series', stroke: item.color, points: points.join(' ') }));
+    else if (points.length) {
+      const [px, py] = points[0].split(',');
+      root.append(svg('circle', { class: 'dot', fill: item.color, cx: px, cy: py, r: 5 }));
+    }
+  }
+  for (const marker of markers) {
+    root.append(svg('circle', { class: 'dot', fill: '#2A1A12', cx: x(marker.index), cy: y(marker.value), r: 5 }),
+      svg('text', { class: 'label', x: x(marker.index) + 8, y: y(marker.value) - 8 }, marker.label));
+  }
+  const crosshair = svg('line', { class: 'crosshair', y1: pad.top, y2: height - pad.bottom, visibility: 'hidden' });
+  const tip = element('div', undefined, 'tip');
+  tip.hidden = true;
+  root.append(crosshair);
+  root.addEventListener('pointermove', (event) => {
+    const box = root.getBoundingClientRect();
+    const px = (event.clientX - box.left) / box.width * width;
+    const index = Math.min(labels.length - 1, Math.max(0, Math.round((px - pad.left) / (width - pad.left - pad.right) * (labels.length - 1))));
+    crosshair.setAttribute('x1', x(index));
+    crosshair.setAttribute('x2', x(index));
+    crosshair.setAttribute('visibility', 'visible');
+    const rows = series.filter((item) => item.values[index] !== null).map((item) => {
+      const row = element('div');
+      const key = element('i');
+      key.style.setProperty('--key', item.color);
+      row.append(key, item.name, element('span', format(item.values[index])));
+      return row;
+    });
+    tip.replaceChildren(element('b', labels[index]), ...rows);
+    tip.hidden = false;
+    const left = x(index) / width * box.width;
+    tip.style.left = `${left > box.width / 2 ? left - tip.offsetWidth - 12 : left + 12}px`;
+  });
+  root.addEventListener('pointerleave', () => { crosshair.setAttribute('visibility', 'hidden'); tip.hidden = true; });
+  container.replaceChildren(root, tip);
+}
+
+let curveKey = '';
+function renderCurve(curve) {
+  const box = byId('curve');
+  const key = JSON.stringify(curve) + box.clientWidth;
+  if (key === curveKey) return;  // redraw only when the data or the width changes, so hovering is not interrupted
+  curveKey = key;
+  const days = [...new Set(curve.map((row) => row.day))];
+  if (!days.length) {
+    byId('curve-legend').replaceChildren();
+    box.replaceChildren(element('p', 'The chart appears after the first closed paper trade.', 'muted'));
+    return;
+  }
+  const names = ['all', ...Object.keys(seriesColors).filter((name) => name !== 'all' && curve.some((row) => row.strategy === name))];
+  const series = names.map((name) => {
+    let total = 0;
+    return {
+      name: strategies[name] || label(name), color: seriesColors[name],
+      values: days.map((day) => {
+        total += curve.filter((row) => row.day === day && (name === 'all' || row.strategy === name)).reduce((sum, row) => sum + row.net_paise, 0);
+        return total;
+      }),
+    };
+  });
+  byId('curve-legend').replaceChildren(...series.map((item) => {
+    const entry = element('span');
+    const swatch = element('i');
+    swatch.style.setProperty('--key', item.color);
+    entry.append(swatch, item.name);
+    return entry;
+  }));
+  lineChart(box, { labels: days.map(ukDate), series, format: (value) => money(Math.round(value)), zero: true });
+}
+
+async function showTrade(tradeId) {
+  const dialog = byId('trade-dialog');
+  byId('trade-title').textContent = 'Loading trade…';
+  byId('trade-summary').textContent = '';
+  byId('trade-chart').replaceChildren();
+  byId('trade-facts').replaceChildren();
+  dialog.showModal();
+  try {
+    const response = await fetch(`/api/stock-chart?trade_id=${encodeURIComponent(tradeId)}`);
+    const trade = await response.json();
+    if (!response.ok) throw new Error(trade.error || 'The trade could not be loaded.');
+    const long = trade.side === 'long';
+    byId('trade-title').textContent = `${trade.symbol} · ${ukDate(trade.day)}`;
+    byId('trade-summary').textContent = `${strategies[trade.strategy] || label(trade.strategy)} · ${long ? 'Bought' : 'Sold short'} ${trade.quantity} shares at ${trade.entry_at} IST` +
+      (trade.exit_at ? ` · closed ${trade.exit_at} (${label(trade.exit_reason).toLowerCase()})` : ' · still open');
+    const clocks = trade.points.map((point) => point[0]);
+    const nearest = (clock) => Math.max(0, clocks.findIndex((item) => item >= clock));
+    const references = [{ value: Number(trade.stop), label: `Stop ${price(trade.stop)}`, color: '#D3343F' }];
+    if (trade.target) references.push({ value: Number(trade.target), label: `Target ${price(trade.target)}`, color: '#0F8A57' });
+    const markers = [{ index: nearest(trade.entry_at), value: Number(trade.entry), label: 'Entry' }];
+    if (trade.exit_at) markers.push({ index: nearest(trade.exit_at), value: Number(trade.exit), label: 'Exit' });
+    if (clocks.length) {
+      lineChart(byId('trade-chart'), {
+        labels: clocks, series: [{ name: trade.symbol, color: seriesColors.all, values: trade.points.map((point) => point[1]) }],
+        references, markers, format: (value) => price(value),
+      });
+    } else {
+      byId('trade-chart').replaceChildren(element('p', 'No prices are available for that session yet.', 'muted'));
+    }
+    const facts = [['Entry', price(trade.entry)], ['Stop', price(trade.stop)], ['Target', trade.target ? price(trade.target) : 'None'],
+      ['Exit', trade.exit ? price(trade.exit) : 'Open'], ['Net P&L', trade.exit ? money(trade.net_paise) : '—']];
+    byId('trade-facts').replaceChildren(...facts.map(([name, value]) => {
+      const item = element('div');
+      item.append(element('dt', name), element('dd', value));
+      return item;
+    }));
+  } catch (error) {
+    byId('trade-title').textContent = 'Trade';
+    byId('trade-summary').textContent = error.message;
+  }
+}
+byId('trade-close').addEventListener('click', () => byId('trade-dialog').close());
+
+function tradeLink(trade) {
+  const button = element('button', trade.symbol, 'linklike');
+  button.type = 'button';
+  button.title = 'Show this trade on a price chart';
+  button.addEventListener('click', () => showTrade(trade.trade_id));
+  return button;
+}
 
 // -- stocks ----------------------------------------------------------------------------------------
 function setup(trade) {
@@ -152,6 +317,7 @@ function renderStocks(stocks) {
   byId('stocks-total').textContent = all ? money(all.net_paise) : '—';
   byId('stocks-total').className = `tile-value ${all ? tone(all.net_paise) : ''}`;
   byId('stocks-total-note').textContent = all ? `Net of charges over ${all.trades} trades` : 'Forward test starts with the first trade';
+  renderCurve(stocks ? stocks.curve : []);
   renderStats('forward-stats', stats, 'No closed paper trades yet. Results build up as the bot trades each day.');
   const percent = (value) => (value === null || value === undefined ? '—' : `${value > 0 ? '+' : value < 0 ? '−' : ''}${Math.abs(value).toFixed(2)}%`);
   renderTable('watchlist', (stocks ? stocks.watchlist : []).map((row) => [
@@ -163,7 +329,7 @@ function renderStocks(stocks) {
   renderTable('stock-trades', rows.map((trade) => {
     const open = trade.exit_at === null;
     return [
-      [trade.symbol, '', `Entered ${localTime(trade.entry_at)} IST`], [setup(trade)], [trade.quantity, 'right'],
+      [tradeLink(trade), '', `Entered ${localTime(trade.entry_at)} IST`], [setup(trade)], [trade.quantity, 'right'],
       [price(trade.entry), 'right'], [price(trade.stop), 'right'], [price(trade.target), 'right'],
       [price(open ? trade.mark : trade.exit), 'right'],
       [open ? closeButton(trade) : `${label(trade.exit_reason)} ${localTime(trade.exit_at)}`],
@@ -352,6 +518,7 @@ function render(state) {
   const halt = state.halt ? `Trading halted · ${label(state.halt)}${state.stop_latched && state.positions.length ? ' · Waiting for the paper exit loop' : ''}` : '';
   showNotice(actionError || halt);
   stop.disabled = submitting || state.stop_latched;
+  byId('resume').hidden = !state.resumable;
 }
 
 let refreshTimer;
@@ -374,6 +541,18 @@ async function refresh() {
     }
   }
 }
+
+byId('resume').addEventListener('click', async () => {
+  if (!token || !window.confirm('Resume paper trading for today? New entries will be allowed again.')) return;
+  actionError = '';
+  try {
+    if (!(await post('/api/resume')).resumed) throw new Error('Nothing to resume');
+  } catch {
+    actionError = 'Trading could not be resumed. Only a stop pressed on this dashboard can be undone.';
+    showNotice(actionError);
+  }
+  await refresh();
+});
 
 stop.addEventListener('click', async () => {
   if (!token || submitting) return;

@@ -216,3 +216,15 @@ def test_a_second_dashboard_cannot_share_the_port(tmp_path):
     with make_server(CONFIG, db, clock=lambda: at, fixture=True, port=0) as server:
         with pytest.raises(OSError):
             make_server(CONFIG, db, clock=lambda: at, fixture=True, port=server.server_port)
+
+
+def test_dashboard_stop_can_be_resumed_but_other_kill_switches_cannot(tmp_path):
+    db, at = seed(tmp_path)
+    store = ExitStore(db)
+    assert store.resume(at) is False
+    store.latch(at, "dashboard_stop")
+    assert status_snapshot(CONFIG, db, at, fixture=True)["resumable"]
+    assert store.resume(at) is True and store.latch(at, None) == (None, False)
+    assert status_snapshot(CONFIG, db, at, fixture=True)["halt"] is None
+    store.latch(at, "daily_loss_limit")
+    assert store.resume(at) is False and not status_snapshot(CONFIG, db, at, fixture=True)["resumable"]

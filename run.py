@@ -49,7 +49,7 @@ def run_surface(config, directory, args, db, *, fixture_clock=None) -> int:
     else:
         movers_context = movers_worker(config, directory, db)
     with movers_context as movers, make_server(config, db, fixture=fixture, movers=movers,
-                                               stocks=getattr(movers, "trader", None), backtest=getattr(movers, "backtest", None),
+                                               stocks=getattr(movers, "trader", None), backtest=getattr(movers, "backtest", None), chart=getattr(movers, "trade_chart", None),
                                                clock=(lambda: fixture_clock) if fixture else now_ist) as server:
         with logs_context as logs:
             alerts = nullcontext() if fixture else alert_worker(config.alerts, db, logs.application)

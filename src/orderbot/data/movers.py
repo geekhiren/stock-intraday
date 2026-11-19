@@ -158,6 +158,31 @@ class MoversScanner:
         self.trader.set_baselines(day, {symbol: (Decimal(atr), Decimal(volume)) for symbol, (atr, volume) in found.items()}, watchlist)
         record("Watchlist", "Today: " + ", ".join(row["symbol"] for row in watchlist) if watchlist else "No watchlist today")
 
+    def trade_chart(self, trade_id: int) -> dict:
+        """Minute closes of the session of one paper trade, with its entry, stop, target and exit."""
+        trade = self.trader.trade(trade_id) if self.trader else None
+        if trade is None or self._session is None:
+            raise ValueError("That trade or the broker session is not available.")
+        day, market = date.fromisoformat(trade["session_day"]), self.config.market
+        start = datetime.combine(day, market.session_open, IST)
+        end = min(datetime.combine(day, market.session_close, IST), minute_floor(self.clock()))
+        for attempt in range(4):
+            try:
+                rows = self.client.historical_minutes(self._credentials, self._session, "NSE", trade["token"], start, end)
+                break
+            except RequestError:
+                sleep(1 + 2 * attempt)
+        else:
+            raise ValueError("The broker did not return prices just now. Try again in a moment.")
+        clock = lambda stamp: as_ist(datetime.fromisoformat(stamp)).strftime("%H:%M") if stamp else None  # noqa: E731
+        return {
+            "symbol": trade["symbol"], "day": trade["session_day"], "strategy": trade["strategy"], "side": trade["side"],
+            "quantity": trade["quantity"], "entry": trade["entry_price"], "stop": trade["stop"], "target": trade["target"] or None,
+            "exit": trade["exit_price"], "exit_reason": trade["exit_reason"], "net_paise": trade["net_paise"],
+            "entry_at": clock(trade["entry_at_utc"]), "exit_at": clock(trade["exit_at_utc"]),
+            "points": [[row[0][11:16], float(row[4])] for row in rows],
+        }
+
     def backtest(self, symbols: list[str], start: date, end: date) -> dict:
         """Replay the stock strategies over SmartAPI minute history. Raises ValueError with a readable reason."""
         if self._session is None or not self._universe:

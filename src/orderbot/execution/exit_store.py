@@ -86,6 +86,19 @@ class ExitStore:
             row = connection.execute("SELECT reason FROM kill_switch_latches WHERE session_day=?", (day,)).fetchone()
         return (row[0] if row else None), inserted
 
+    def resume(self, at: datetime) -> bool:
+        """Clear today's latch if the dashboard Stop control set it. Other kill switches stay latched."""
+        day = as_ist(at).date().isoformat()
+        with open_store(self.path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cleared = bool(connection.execute(
+                "DELETE FROM kill_switch_latches WHERE session_day=? AND reason='dashboard_stop'", (day,)).rowcount)
+            if cleared:
+                connection.execute("DELETE FROM execution_halts WHERE session_day=? AND reason='dashboard_stop'", (day,))
+                connection.execute("INSERT INTO exit_audit(at_utc, event, fields_json) VALUES (?, ?, ?)",
+                                   (to_storage(at), "dashboard_resume", json.dumps({"reason": "dashboard_stop"})))
+        return cleared
+
     def emit(self, at: datetime, event: str, fields: dict, *, once_key: str | None = None,
              alert_correlation_id: str | None = None) -> bool:
         with open_store(self.path) as connection:

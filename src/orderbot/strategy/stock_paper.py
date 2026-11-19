@@ -214,6 +214,12 @@ class StockPaperTrader:
             ticks[tick.token] = tick
         return ticks
 
+    def trade(self, trade_id: int) -> dict | None:
+        """One paper trade as stored, for the trade detail view."""
+        with open_store(self.db) as connection:
+            row = connection.execute("SELECT * FROM stock_trades WHERE trade_id=?", (trade_id,)).fetchone()
+        return dict(row) if row else None
+
     def held(self) -> list[dict]:
         """Open paper positions, for the fast price watch between scans."""
         with open_store(self.db) as connection:
@@ -498,6 +504,10 @@ class StockPaperTrader:
             rows = connection.execute("SELECT * FROM stock_trades WHERE session_day=? OR exit_at_utc IS NULL ORDER BY trade_id",
                                       (now.date().isoformat(),)).fetchall()
             stats = strategy_stats(connection)
+            curve = [{"day": day, "strategy": strategy, "net_paise": net} for day, strategy, net in connection.execute("""
+                SELECT session_day, strategy, SUM(net_paise) FROM stock_trades WHERE exit_at_utc IS NOT NULL
+                GROUP BY session_day, strategy ORDER BY session_day, strategy
+            """)]
 
         def view(row):
             mark = self._marks.get(row["token"])
@@ -516,7 +526,7 @@ class StockPaperTrader:
             "risk_paise": int(stocks.capital_inr * stocks.risk_per_trade_pct / 100 / PAISA),
             "loss_limit_paise": int(stocks.capital_inr * self.config.risk.daily_loss_limit_pct / 100 / PAISA),
             "net_paise": sum(trade["net_paise"] for trade in closed),
-            "open": [view(row) for row in rows if not row["exit_at_utc"]], "trades": closed, "stats": stats,
+            "open": [view(row) for row in rows if not row["exit_at_utc"]], "trades": closed, "stats": stats, "curve": curve,
             "watchlist": [row | {"today_pct": changes.get(row["symbol"])} for row in self.watchlist]
             if self._baseline_day == now.date() else [],
         }
