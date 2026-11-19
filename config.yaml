@@ -105,6 +105,27 @@ strategy_a:
   k_sl: "2"
   k_tgt: "4"
   max_premium_loss_fraction: "0.35"
+exits:
+  square_off_time: "15:10"
+  backstop_time: "15:20"
+  expiry_force_exit_minutes: 60
+  stall_minutes: 20
+  max_hold_minutes: 120
+  stall_minimum_r: "0.5"
+  break_even_r: "1"
+  trail_start_r: "2"
+  trail_peak_fraction: "0.50"
+  long_exit_rsi: "70"
+  short_exit_rsi: "30"
+  reprice_seconds: 2
+  reprice_extra_ticks: [0, 1, 2]
+  paper_protection_fraction: "0.025"
+kill_switch:
+  rejection_limit: 3
+  max_clock_drift_seconds: "2"
+  volatility_window_minutes: 5
+  volatility_move_fraction: "0.015"
+  sentinel_path: var/STOP
 storage:
   sqlite_path: var/orderbot.sqlite3
 logging:

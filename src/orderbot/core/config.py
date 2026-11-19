@@ -211,6 +211,46 @@ class StrategyAConfig(Section):
         return self
 
 
+class ExitConfig(Section):
+    square_off_time: time
+    backstop_time: time
+    expiry_force_exit_minutes: PositiveCount
+    stall_minutes: PositiveCount
+    max_hold_minutes: PositiveCount
+    stall_minimum_r: PositiveDecimal
+    break_even_r: PositiveDecimal
+    trail_start_r: PositiveDecimal
+    trail_peak_fraction: TurnoverRate
+    long_exit_rsi: RSIPoint
+    short_exit_rsi: RSIPoint
+    reprice_seconds: PositiveSeconds
+    reprice_extra_ticks: tuple[NonnegativeCount, NonnegativeCount, NonnegativeCount]
+    paper_protection_fraction: Annotated[Decimal, Field(gt=0, lt=1, allow_inf_nan=False)]
+
+    @model_validator(mode="after")
+    def check_exit_ranges(self):
+        if any(value.tzinfo or value.second or value.microsecond for value in (self.square_off_time, self.backstop_time)):
+            raise ValueError("Exit timers must be IST minute boundaries.")
+        if not self.square_off_time < self.backstop_time:
+            raise ValueError("Use a backstop after the initial square-off.")
+        if not self.stall_minutes < self.max_hold_minutes:
+            raise ValueError("The stall timer must precede the maximum hold timer.")
+        if not self.stall_minimum_r < self.break_even_r < self.trail_start_r:
+            raise ValueError("Trailing and stall R thresholds must increase.")
+        first, second, third = self.reprice_extra_ticks
+        if not first == 0 < second < third:
+            raise ValueError("Use zero followed by two increasing exit repricing offsets.")
+        return self
+
+
+class KillSwitchConfig(Section):
+    rejection_limit: PositiveCount
+    max_clock_drift_seconds: PositiveDecimal
+    volatility_window_minutes: PositiveCount
+    volatility_move_fraction: Annotated[Decimal, Field(gt=0, le=1, allow_inf_nan=False)]
+    sentinel_path: Path
+
+
 class StorageConfig(Section):
     sqlite_path: Path
 
@@ -249,9 +289,17 @@ class Config(Section):
     costs: CostConfig
     execution: ExecutionConfig
     strategy_a: StrategyAConfig
+    exits: ExitConfig
+    kill_switch: KillSwitchConfig
     storage: StorageConfig
     logging: LoggingConfig
     broker: BrokerConfig
+
+    @model_validator(mode="after")
+    def check_exit_session(self):
+        if not self.market.session_open < self.exits.square_off_time < self.exits.backstop_time < self.market.session_close:
+            raise ValueError("Square-off and its backstop must occur within the trading session.")
+        return self
 
 
 def load_config(path: Path) -> Config:

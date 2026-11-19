@@ -253,6 +253,34 @@ class Journal:
                 (as_ist(at).date().isoformat(), to_storage(at), reason),
             ).rowcount)
 
+    def decision_detail(self, decision_id: str) -> dict:
+        with open_store(self.path) as connection:
+            row = connection.execute("SELECT detail_json FROM decisions WHERE decision_id=?", (decision_id,)).fetchone()
+        if row is None:
+            raise LifecycleError("Position has no originating decision.")
+        return json.loads(row[0])
+
+    def recent_order_health(self, at: datetime) -> tuple[int, bool]:
+        day = as_ist(at).date()
+        with open_store(self.path) as connection:
+            rows = connection.execute(
+                "SELECT at_utc, state, detail_json FROM order_events "
+                "WHERE state IN ('ACKED', 'REJECTED') AND at_utc <= ? ORDER BY event_id DESC",
+                (to_storage(at),),
+            )
+            streak, consecutive, funds = 0, True, False
+            for row in rows:
+                if from_storage(row["at_utc"]).date() < day:
+                    break
+                if row["state"] == "ACKED":
+                    consecutive = False
+                else:
+                    if consecutive:
+                        streak += 1
+                    if json.loads(row["detail_json"]).get("reason") == "insufficient_funds":
+                        funds = True
+            return streak, funds
+
     def history(self, tag: str) -> list[dict]:
         with open_store(self.path) as connection:
             return [

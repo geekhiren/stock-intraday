@@ -10,6 +10,7 @@ from time import sleep
 from orderbot.broker.instruments import Instrument
 from orderbot.core.config import Config
 from orderbot.core.ist_time import as_ist, now_ist, parse_timestamp
+from orderbot.core.money import is_finite_decimal
 from orderbot.options.freeze_quantity import FreezeError, split_quantity
 from orderbot.options.liquidity_gate import OptionQuote
 from orderbot.options.strike_selector import StrikeDecision, revalidate_selection
@@ -45,6 +46,7 @@ class PaperExecutor:
         self.alert = alert if alert is not None else lambda event: None
         self.reconciler = Reconciler(journal, venue, self.alert)
         self._last_reconciled: datetime | None = None
+        self.last_reconciliation: Reconciliation | None = None
         self._ready = False
         self._lock = RLock()
 
@@ -56,6 +58,7 @@ class PaperExecutor:
             now = self._now()
             result = self.reconciler.reconcile(now, recover_unsent=self._last_reconciled is None)
             self._last_reconciled = now
+            self.last_reconciliation = result
             self._ready = result.ok
             return result
 
@@ -144,7 +147,7 @@ class PaperExecutor:
 
     def exit_position(
         self, decision_id: str, contract: Instrument, quote: OptionQuote, *,
-        reason: str, quantity: int | None = None,
+        reason: str, quantity: int | None = None, limit_price: Decimal | None = None,
     ) -> ExecutionResult:
         with self._lock:
             at = self._now()
@@ -178,10 +181,11 @@ class PaperExecutor:
             )
             if not allowed.allowed:
                 return ExecutionResult("skipped", str(allowed.reason))
-            if not self.venue.fresh_book(quote, contract.token, contract.price_tick, at):
+            if not self.venue.fresh_book(quote, contract.token, contract.price_tick, at, side="SELL"):
                 return ExecutionResult("skipped", "exit_quote_unavailable")
-            limit = quote.bids[0].price - self.config.costs.slippage_ticks * contract.price_tick
-            if limit <= 0:
+            limit = (quote.bids[0].price - self.config.costs.slippage_ticks * contract.price_tick
+                     if limit_price is None else limit_price)
+            if not is_finite_decimal(limit) or limit <= 0 or limit % contract.price_tick:
                 return ExecutionResult("skipped", "exit_price_unavailable")
             try:
                 children = split_quantity(requested, contract, self.config.options.quantity_freeze_units).children
@@ -189,6 +193,26 @@ class PaperExecutor:
                 return ExecutionResult("skipped", "invalid_exit_quantity")
             intents = self._intents(decision_id, position.strategy, contract, "SELL", children, limit, at, None, reason)
             return self._prepare_and_send(intents, ledger.revision, quote)
+
+    def cancel_working_orders(self, side: str, *, decision_id: str | None = None) -> bool:
+        """Cancel only orders whose venue identity and current exposure reconcile."""
+        if side not in {"BUY", "SELL"}:
+            raise ValueError("Cancellation requires a known side.")
+        with self._lock:
+            if not self.reconcile().ok:
+                return False
+            working = [item for item in self.journal.snapshot().orders if (
+                not item.state.terminal and item.intent.side == side
+                and (decision_id is None or item.intent.decision_id == decision_id)
+            )]
+            if any(item.state not in {OrderState.ACKED, OrderState.PARTIAL} for item in working):
+                return False
+            for item in working:
+                report = self.venue.cancel(item.intent.tag, "protective_cancel" if side == "BUY" else "exit_reprice")
+                self.journal.sync((report,), self._now())
+                if not report.state.terminal:
+                    return False
+            return True
 
     def poll(self, quotes: Mapping[str, OptionQuote]) -> bool:
         """Advance resting fills, cancel expired remainders, and run due reconciliation."""
@@ -230,7 +254,7 @@ class PaperExecutor:
             at = self._now()
             if (
                 at.date() != intent.at.date() or self._expired(intent, at)
-                or not self.venue.fresh_book(quote, intent.token, intent.price_tick, at)
+                or not self.venue.fresh_book(quote, intent.token, intent.price_tick, at, side=intent.side)
             ):
                 self.journal.sync((), at, cancel_unsent=tags[index:])
                 return ExecutionResult("stopped", "quote_expired_before_send", tags)

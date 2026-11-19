@@ -1,0 +1,40 @@
+{
+  "source": "Synthetic paper exit and health observations",
+  "entry_fixture": "phase4_execution.json",
+  "plan": {
+    "side": "long",
+    "futures_entry": "22150",
+    "atr": "50",
+    "abs_delta": "0.52",
+    "option_entry": "120.10",
+    "premium_stop": "78.065",
+    "premium_target": "224.10"
+  },
+  "exit_book": {"bid": "119.95", "ask": "120.05", "depth": 1300},
+  "switches": [
+    {"reason": "stale_tick", "seconds": 5, "wait_for_quote": true},
+    {"reason": "websocket_down", "seconds": 30, "wait_for_quote": true},
+    {"reason": "order_rejections", "rejections": 3},
+    {"reason": "position_mismatch", "mismatch": true, "wait_for_confirmation": true},
+    {"reason": "insufficient_funds", "insufficient_funds": true},
+    {"reason": "clock_drift", "drift_seconds": "-2.01"},
+    {"reason": "volatility_spike", "window_seconds": 300, "from": "22150", "to": "22500"},
+    {"reason": "sentinel", "sentinel": true},
+    {"reason": "dashboard_stop", "dashboard_stop": true}
+  ],
+  "square_off": {
+    "at": "2026-11-30T15:10:00+05:30",
+    "backstop_at": "2026-11-30T15:20:00+05:30",
+    "shallow_depth": 20,
+    "protection_reference": "120.10",
+    "protection_limit": "117.10",
+    "expected_limit_prices": ["119.90", "119.85", "119.80"]
+  },
+  "trailing": {
+    "risk_per_unit": "42.035",
+    "one_r_mark": "162.15",
+    "two_r_mark": "205.10",
+    "break_even_stop": "121.20",
+    "trailing_stop": "162.60"
+  }
+}

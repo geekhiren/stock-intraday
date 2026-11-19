@@ -89,7 +89,7 @@ class PaperVenue:
 
     def _match(self, connection, report: OrderReport, quote: OptionQuote, at: datetime) -> OrderReport:
         now, intent = as_ist(at), report.intent
-        if not self.fresh_book(quote, intent.token, intent.price_tick, now):
+        if not self.fresh_book(quote, intent.token, intent.price_tick, now, side=intent.side):
             return report
         buy = intent.side == "BUY"
         level = quote.asks[0] if buy else quote.bids[0]
@@ -117,22 +117,22 @@ class PaperVenue:
             cumulative, report.filled_value + price * filled, report.first_fill_at or now, now,
         )
 
-    def fresh_book(self, quote: OptionQuote, token: str, tick: Decimal, at: datetime) -> bool:
+    def fresh_book(self, quote: OptionQuote, token: str, tick: Decimal, at: datetime, *, side: str = "BUY") -> bool:
         at = as_ist(at)
         session = TradingSession.from_config(at.date(), self.config.market)
         if (
             not session.opens_at <= at < session.closes_at
-            or quote.token != token or not quote.bids or not quote.asks
+            or quote.token != token or not quote.bids or (side == "BUY" and not quote.asks)
             or not quote.exchange_at <= quote.received_at <= at
             or quote.exchange_at.date() != at.date()
             or (at - quote.exchange_at).total_seconds() >= self.config.options.quote_max_age_seconds
         ):
             return False
-        bid, ask = quote.bids[0], quote.asks[0]
+        levels = quote.bids[:1] + quote.asks[:1]
         return all(
             is_finite_decimal(level.price) and level.price > 0 and level.price % tick == 0
-            and type(level.quantity) is int and level.quantity > 0 for level in (bid, ask)
-        ) and bid.price < ask.price
+            and type(level.quantity) is int and level.quantity > 0 for level in levels
+        ) and (not quote.asks or quote.bids[0].price < quote.asks[0].price)
 
     @staticmethod
     def _positions(orders) -> dict[str, int]:

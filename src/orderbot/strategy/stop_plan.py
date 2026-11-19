@@ -46,6 +46,22 @@ class StopPlan:
         )
         return {"side": self.side, **{name: str(getattr(self, name)) for name in amounts}}
 
+    @classmethod
+    def from_view(cls, data: dict) -> "StopPlan":
+        values = {name: Decimal(data[name]) for name in (
+            "underlying_entry", "underlying_stop", "underlying_target", "atr", "abs_delta", "option_entry",
+            "max_premium_loss_fraction",
+        )}
+        stop, entry, target = values["underlying_stop"], values["underlying_entry"], values["underlying_target"]
+        side = data["side"]
+        if (
+            side not in {"long", "short"} or any(not value.is_finite() or value <= 0 for value in values.values())
+            or not (stop < entry < target if side == "long" else target < entry < stop)
+            or values["abs_delta"] > 1 or values["max_premium_loss_fraction"] >= 1
+        ):
+            raise ValueError("Stored stop plan is inconsistent.")
+        return cls(side=side, **values)
+
 
 def build_stop_plan(
     side: Side, futures_entry: Decimal, atr: Decimal, delta: Decimal, option_entry: Decimal,

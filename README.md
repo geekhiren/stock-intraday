@@ -88,3 +88,18 @@ python -m pytest tests/test_strategy_a.py
 The replay calculates VWAP, Wilder RSI and ATR from 375 synthetic near-month futures candles, evaluates all nine entry gates, and routes CE and PE signals through the paper executor. The audit records a result for each gate and the projected and fill-anchored stop plans for completed trades. Fixture events request the exits. The Phase 6 exit engine supplies automated exits.
 
 The entry window applies to the actual decision and submission clocks, with the end instant excluded. The noon cutoff uses the listed market expiry even when the selected option has rolled to a later date. The optional pivot rule uses the directional band in §19. The IV gate uses the last 20 completed session observations for the same option right, the nearest-rank 80th percentile, and a strict below-threshold comparison on the current ATM contract. Collection of authenticated ATM IV samples and execution against recorded Angel One market data still need verification.
+
+## Paper exits and kill-switch drills
+
+```powershell
+python run.py --replay-exits tests/fixtures/phase6_exits.json
+python -m pytest tests/test_exit_engine.py
+```
+
+The exit controller consumes ticks, closed futures candles, and timer or health events. It rebuilds the stop plan from the journal and the actual average entry fill. At +1R it raises the premium stop to the on-tick fee break-even estimate. Above +2R a closed candle can raise the stop to capture half the peak premium gain. Exit priority puts square-off and kill switches first, then the premium floor and the underlying and mapped premium stops before either target.
+
+At 15:10 IST the controller latches the entry halt and runs the bid-referenced limit ladder with configured paper slippage, two wider offsets, and confirmed cancellation before each reprice. The 15:20 backstop uses a paper sell limit protected by a configured fraction of fresh option LTP. This models price protection with visible depth. A failed ladder or a backstop that cannot confirm flat emits a durable alert. §14 reserves protected execution for the backstop, so ordinary exits use the limit ladder and alert on exhaustion.
+
+All nine kill switches latch through SQLite. A switch cancels known working buys before processing further fills and attempts to close the confirmed position. A stale feed can delay the sell until an executable quote arrives. A position mismatch blocks new entries and holds liquidation until the independent position book reconciles. The fixture uses synthetic funding to seed the position and runs exits with capital and risk unset.
+
+Live timer and health-event delivery, Angel One depth, order/cancellation acknowledgement, and the broker's protection bands and fill behavior remain unverified. [Angel One market-price protection policy](https://www.angelone.in/riskpolicy)
