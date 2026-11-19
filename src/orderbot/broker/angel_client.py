@@ -7,8 +7,10 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from ipaddress import ip_address
+from pathlib import Path
 from threading import Lock
 from time import monotonic, sleep
+from uuid import getnode
 
 import pyotp
 import requests
@@ -37,8 +39,8 @@ class Credentials:
     client_code: str = field(repr=False)
     mpin: str = field(repr=False)
     totp_secret: str = field(repr=False)
-    local_ip: str
-    public_ip: str
+    local_ip: str | None
+    public_ip: str | None
     mac_address: str
 
 
@@ -50,7 +52,7 @@ class Session:
 
 
 def read_credentials(
-    config: BrokerConfig, environment: Mapping[str, str] = os.environ
+    config: BrokerConfig, environment: Mapping[str, str] = os.environ, *, env_file: Path | None = None,
 ) -> Credentials:
     names = {
         "api_key": config.api_key_env,
@@ -62,17 +64,52 @@ def read_credentials(
         "mac_address": config.mac_address_env,
     }
     values = {key: environment.get(name, "").strip() for key, name in names.items()}
-    missing = [names[key] for key, value in values.items() if not value]
+    if env_file is not None and not all(values.values()):
+        fallback = _read_broker_env(env_file, {name for key, name in names.items() if not values[key]})
+        values = {key: values[key] or fallback.get(name, "") for key, name in names.items()}
+    missing = [names[key] for key in ("api_key", "client_code", "mpin", "totp_secret") if not values[key]]
     if missing:
         raise LoginError("Missing SmartAPI environment variables " + ", ".join(missing) + ".")
     for key in ("local_ip", "public_ip"):
+        if not values[key]:
+            values[key] = None
+            continue
         try:
             ip_address(values[key])
         except ValueError:
             raise LoginError(f"Expected an IP address in {names[key]}.") from None
+    if not values["mac_address"]:
+        node = getnode()
+        if not node or node & (1 << 40):
+            raise LoginError(f"Could not detect the adapter MAC. Set {config.mac_address_env} in .env.")
+        values["mac_address"] = node.to_bytes(6, "big").hex(":")
     if not re.fullmatch(r"(?:[\da-fA-F]{2}:){5}[\da-fA-F]{2}", values["mac_address"]):
         raise LoginError(f"Expected a colon-delimited MAC address in {config.mac_address_env}.")
     return Credentials(**values)
+
+
+def _read_broker_env(path: Path, names: set[str]) -> dict[str, str]:
+    values = {}
+    try:
+        with path.open(encoding="utf-8-sig") as stream:
+            for number, line in enumerate(stream, start=1):
+                name, separator, raw_value = line.strip().partition("=")
+                name = name.strip()
+                if name not in names:
+                    continue
+                value = raw_value.strip()
+                if not separator or name in values:
+                    raise LoginError(f"Invalid SmartAPI setting on .env line {number}.")
+                if value.startswith(("'", '"')):
+                    if len(value) < 2 or value[-1] != value[0]:
+                        raise LoginError(f"Unclosed quote on .env line {number}.")
+                    value = value[1:-1].strip()
+                values[name] = value
+    except FileNotFoundError:
+        pass
+    except (OSError, UnicodeError):
+        raise LoginError("Could not read the SmartAPI .env file as UTF-8.") from None
+    return values
 
 
 class AngelClient:
@@ -91,15 +128,18 @@ class AngelClient:
 
     @staticmethod
     def _headers(credentials: Credentials) -> dict[str, str]:
-        return {
+        headers = {
             "Accept": "application/json",
             "X-PrivateKey": credentials.api_key,
             "X-UserType": "USER",
             "X-SourceID": "WEB",
-            "X-ClientLocalIP": credentials.local_ip,
-            "X-ClientPublicIP": credentials.public_ip,
             "X-MACAddress": credentials.mac_address,
         }
+        if credentials.local_ip is not None:
+            headers["X-ClientLocalIP"] = credentials.local_ip
+        if credentials.public_ip is not None:
+            headers["X-ClientPublicIP"] = credentials.public_ip
+        return headers
     def login(self, credentials: Credentials) -> Session:
         def payload():
             try:

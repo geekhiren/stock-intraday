@@ -163,10 +163,10 @@ broker:
   base_url: https://apiconnect.angelone.in
   timeout_seconds: 10
   rest_max_requests_per_second: 1
-  api_key_env: ANGEL_ONE_API_KEY
-  client_code_env: ANGEL_ONE_CLIENT_CODE
-  mpin_env: ANGEL_ONE_MPIN
-  totp_secret_env: ANGEL_ONE_TOTP_SECRET
+  api_key_env: ANGEL_TRADING_API_KEY
+  client_code_env: ANGEL_CLIENT_ID
+  mpin_env: ANGEL_PASSWORD
+  totp_secret_env: ANGEL_TOTP_SECRET
   local_ip_env: ANGEL_ONE_LOCAL_IP
   public_ip_env: ANGEL_ONE_PUBLIC_IP
   mac_address_env: ANGEL_ONE_MAC_ADDRESS

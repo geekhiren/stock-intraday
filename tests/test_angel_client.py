@@ -71,6 +71,45 @@ def test_missing_credentials_fail_before_connecting(broker):
         read_credentials(broker, {})
 
 
+def test_dotenv_supplies_missing_credentials_without_overriding_environment(broker, credential_environment, tmp_path):
+    path = tmp_path / ".env"
+    entries = [f'{name}="{value}"' for name, value in credential_environment.items()]
+    path.write_text("# SmartAPI\n" + "\n".join(entries), encoding="utf-8-sig")
+
+    credentials = read_credentials(broker, {broker.api_key_env: "env-key"}, env_file=path)
+
+    assert credentials.api_key == "env-key"
+    assert credentials.mpin == "0123"
+    assert credentials.totp_secret == TOTP["secret"]
+    assert credentials.mac_address == "02:00:00:00:00:01"
+
+
+def test_malformed_dotenv_stays_redacted(broker, tmp_path):
+    path = tmp_path / ".env"
+    path.write_text(f'{broker.api_key_env}="fixture-secret\n', encoding="utf-8")
+
+    with pytest.raises(LoginError, match=r"\.env line 1") as error:
+        read_credentials(broker, {}, env_file=path)
+    assert "fixture-secret" not in str(error.value)
+
+
+def test_four_login_fields_use_detected_mac_and_omit_unset_ip_headers(broker, credential_environment, monkeypatch):
+    monkeypatch.setattr(angel_client, "getnode", lambda: 0x020000000001)
+    names = (broker.api_key_env, broker.client_code_env, broker.mpin_env, broker.totp_secret_env)
+    credentials = read_credentials(broker, {name: credential_environment[name] for name in names})
+    headers = AngelClient(broker)._headers(credentials)
+
+    assert headers["X-MACAddress"] == "02:00:00:00:00:01"
+    assert "X-ClientLocalIP" not in headers and "X-ClientPublicIP" not in headers
+
+
+def test_missing_mac_rejects_random_fallback(broker, credential_environment, monkeypatch):
+    monkeypatch.setattr(angel_client, "getnode", lambda: 0x010000000001)
+    del credential_environment[broker.mac_address_env]
+    with pytest.raises(LoginError, match=broker.mac_address_env):
+        read_credentials(broker, credential_environment)
+
+
 def test_transport_timeout_is_redacted_and_not_retried(broker, credential_environment):
     transport = Mock()
     transport.post.side_effect = requests.Timeout("test-key")

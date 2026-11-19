@@ -155,7 +155,8 @@ def main() -> int:
                     },
                 )
                 if args.broker_login:
-                    AngelClient(config.broker).login(read_credentials(config.broker))
+                    credentials = read_credentials(config.broker, env_file=directory / ".env")
+                    AngelClient(config.broker).login(credentials)
                     logs.application.info("broker_login_succeeded", extra=context)
                 if args.capture_data:
                     count = capture_session(config, directory, logs.application, context["correlation_id"],

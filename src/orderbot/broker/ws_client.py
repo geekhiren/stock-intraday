@@ -30,6 +30,8 @@ SNAP_TRADE_DATA = struct.Struct("<qq")
 SNAP_TRADE_DATA_START = 123
 BOOK_START = 147
 LEVEL = struct.Struct("<HqqH")
+UNAVAILABLE_LEVEL = (0xFFFF, -1, -1, 0xFFFF)
+UNIX_SECONDS_LIMIT = 10**10
 LOGGER = logging.Logger("orderbot.smartapi.websocket")
 LOGGER.disabled = True
 
@@ -76,6 +78,9 @@ def decode_snap(raw: bytes) -> MarketTick:
     _, exchange, token_bytes, sequence, exchange_ms, price = SNAP_HEADER.unpack_from(raw)
     volume = SNAP_VOLUME.unpack_from(raw, SNAP_VOLUME_START)[0]
     trade_ms, open_interest = SNAP_TRADE_DATA.unpack_from(raw, SNAP_TRADE_DATA_START)
+    # Snap Quote can send last-trade time in Unix seconds even though exchange time is in milliseconds.
+    if 0 < trade_ms < UNIX_SECONDS_LIMIT:
+        trade_ms *= 1000
     token = token_bytes.split(b"\0", 1)[0]
     if not token.isdigit() or exchange not in {NSE_CASH, NSE_DERIVATIVES}:
         raise FeedError("Unexpected Snap Quote token or exchange.")
@@ -83,8 +88,9 @@ def decode_snap(raw: bytes) -> MarketTick:
         raise FeedError("Snap Quote has invalid price, volume or timestamps.")
     sides: dict[int, list[Level]] = {1: [], 0: []}
     for level_number in range(10):
-        flag, quantity, price_paise, orders = LEVEL.unpack_from(raw, BOOK_START + level_number * LEVEL.size)
-        if price_paise == quantity == 0:
+        level = LEVEL.unpack_from(raw, BOOK_START + level_number * LEVEL.size)
+        flag, quantity, price_paise, orders = level
+        if price_paise == quantity == 0 or level == UNAVAILABLE_LEVEL:
             continue
         if flag not in sides or price_paise <= 0 or quantity <= 0 or len(sides[flag]) >= 5:
             raise FeedError("Unexpected Snap Quote depth layout.")

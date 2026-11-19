@@ -3,10 +3,12 @@
   "exchange_type": 2,
   "exchange_epoch_ms": 1794973500300,
   "trade_epoch_ms": 1794973500100,
+  "trade_epoch_seconds": 1794973500,
   "sequence": 42,
   "price_paise": 2215000,
   "cumulative_volume": 120,
   "open_interest": 8700,
+  "unavailable_depth_level": [65535, -1, -1, 65535],
   "bids": [
     [
       2214990,

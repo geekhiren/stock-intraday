@@ -90,7 +90,7 @@ def compare_with_broker(config: Config, directory: Path, day: date) -> tuple[dic
     def request_reference():
         nonlocal credentials, auth
         if auth is None:
-            credentials = read_credentials(config.broker)
+            credentials = read_credentials(config.broker, env_file=directory / ".env")
             auth = client.login(credentials)
         return client.historical_minutes(credentials, auth, future.exchange, future.token,
                                          session.opens_at, session.closes_at)
@@ -121,7 +121,7 @@ def capture_session(
     earliest = session.opens_at - timedelta(minutes=config.data.capture_lead_minutes)
     if not earliest <= now < session.closes_at:
         raise ValueError(f"Start paper capture between {earliest:%H:%M} and {session.closes_at:%H:%M} IST.")
-    credentials = read_credentials(config.broker)
+    credentials = read_credentials(config.broker, env_file=directory / ".env")
     master = load_master(config.data, config.market.underlying, session.day, directory)
     future = master.front_future(session.day)
     options = {option.token for option in master.options if option.expiry >= session.day}

@@ -13,17 +13,17 @@ python -m pytest
 
 ## SmartAPI login check
 
-Set the following variables in the environment from which you run OrderBOT.
+Set the following variables in an untracked `.env` file beside `config.yaml`, using one `NAME=value` per line. Nonempty environment variables take precedence over `.env` values.
 
 | Variable | Value |
 | --- | --- |
-| `ANGEL_ONE_API_KEY` | SmartAPI application key |
-| `ANGEL_ONE_CLIENT_CODE` | Angel One client code |
-| `ANGEL_ONE_MPIN` | SmartAPI login PIN, including any leading zeros |
-| `ANGEL_ONE_TOTP_SECRET` | Base32 authenticator setup secret |
-| `ANGEL_ONE_LOCAL_IP` | Local IP of the client machine |
-| `ANGEL_ONE_PUBLIC_IP` | Public egress IP used with SmartAPI |
-| `ANGEL_ONE_MAC_ADDRESS` | Colon-delimited MAC of the client machine |
+| `ANGEL_TRADING_API_KEY` | SmartAPI application key |
+| `ANGEL_CLIENT_ID` | Angel One client code |
+| `ANGEL_PASSWORD` | SmartAPI login PIN, including any leading zeros |
+| `ANGEL_TOTP_SECRET` | Base32 authenticator setup secret |
+| `ANGEL_ONE_LOCAL_IP` | Optional local IP header |
+| `ANGEL_ONE_PUBLIC_IP` | Optional public IP header |
+| `ANGEL_ONE_MAC_ADDRESS` | Optional colon-delimited MAC override. OrderBOT detects the adapter MAC when the value is omitted |
 
 Run `python run.py --broker-login` to authenticate. The command reports success or a sanitized error and exits. The [SmartAPI documentation](https://smartapi.angelone.in/docs) describes the request headers and authentication flow.
 

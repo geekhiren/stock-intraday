@@ -13,8 +13,8 @@ from unittest.mock import Mock
 import pytest
 
 from orderbot.broker.instruments import InstrumentError, load_master
-from orderbot.broker.angel_client import Credentials, Session
-from orderbot.broker.ws_client import FeedNotice, MarketFeed, decode_snap
+from orderbot.broker.angel_client import Session
+from orderbot.broker.ws_client import FeedError, FeedNotice, MarketFeed, decode_snap
 from orderbot.core.config import load_config
 from orderbot.core.ist_time import IST
 from orderbot.data.candle_builder import Candle, CandleBuilder, TradingSession
@@ -100,6 +100,29 @@ def test_snap_fixture_decodes_correct_book_sides_and_trade_time():
         (Decimal("22149.90"), 65), (Decimal("22149.85"), 130),
     ]
     assert tick.asks[0].price == Decimal("22150.10")
+
+
+def test_snap_quote_accepts_unavailable_index_depth_without_inventing_quotes():
+    sample = fixture("market_snap")
+    raw = bytearray(packet("99926000", sample["exchange_epoch_ms"], 0, sample["sequence"],
+                           sample["price_paise"], 0, exchange=1))
+    level = struct.Struct("<HqqH")
+    for index in range(10):
+        level.pack_into(raw, 147 + index * level.size, *sample["unavailable_depth_level"])
+    tick = decode_snap(bytes(raw))
+    assert tick.price == Decimal("22150")
+    assert tick.bids == tick.asks == ()
+
+
+def test_snap_quote_normalizes_last_trade_epoch_seconds():
+    sample = fixture("market_snap")
+    raw = packet(sample["token"], sample["exchange_epoch_ms"], sample["trade_epoch_seconds"],
+                 sample["sequence"], sample["price_paise"], sample["cumulative_volume"])
+    assert decode_snap(raw).trade_at.isoformat() == "2026-11-18T09:15:00+05:30"
+    future_trade = packet(sample["token"], sample["exchange_epoch_ms"], sample["trade_epoch_seconds"] + 1,
+                          sample["sequence"], sample["price_paise"], sample["cumulative_volume"])
+    with pytest.raises(FeedError, match="timestamps"):
+        decode_snap(future_trade)
 
 
 def test_builder_waits_for_grace_orders_late_snapshots_and_ignores_duplicates():
@@ -302,11 +325,18 @@ def test_capture_preserves_history_seed_for_mid_session_replay(tmp_path, monkeyp
     cache_fixture_master(tmp_path, session.day)
     clock = [session.opens_at + timedelta(minutes=2, seconds=3)]
     monkeypatch.setattr(capture, "now_ist", lambda: clock[0])
-    monkeypatch.setattr(
-        capture, "read_credentials",
-        lambda _: Credentials("test-key", "test-client", "0123", "secret", "192.0.2.1",
-                              "203.0.113.10", "02:00:00:00:00:01"),
-    )
+    credentials = {
+        CONFIG.broker.api_key_env: "test-key",
+        CONFIG.broker.client_code_env: "test-client",
+        CONFIG.broker.mpin_env: "0123",
+        CONFIG.broker.totp_secret_env: "secret",
+        CONFIG.broker.local_ip_env: "192.0.2.1",
+        CONFIG.broker.public_ip_env: "203.0.113.10",
+        CONFIG.broker.mac_address_env: "02:00:00:00:00:01",
+    }
+    for name in credentials:
+        monkeypatch.delenv(name, raising=False)
+    (tmp_path / ".env").write_text("\n".join(f"{name}={value}" for name, value in credentials.items()), encoding="utf-8")
     broker = Mock()
     broker.login.return_value = Session("test-jwt", "test-refresh", "test-feed")
     broker.historical_minutes.side_effect = [[], fixture("history")["data"]]
@@ -315,6 +345,7 @@ def test_capture_preserves_history_seed_for_mid_session_replay(tmp_path, monkeyp
     class FixtureFeed:
         def stream(self, headers, subscriptions, required, captured_session):
             assert headers["Authorization"] == "Bearer test-jwt"
+            assert headers["x-api-key"] == "test-key"
             assert subscriptions == {1: ["99926000"], 2: ["61471", "42544"]}
             assert required == (2, "61471")
             assert captured_session == session
