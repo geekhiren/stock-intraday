@@ -16,7 +16,7 @@ python -m pytest
 `start-orderbot.cmd` starts `python run.py --dashboard` from the project folder and appends its console output to `var/log/dashboard-console.log`. A weekday Windows scheduled task can run it before the open:
 
 ```powershell
-schtasks /Create /TN "OrderBOT paper dashboard" /TR "\"C:\path	o\OrderBOT\start-orderbot.cmd\"" /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 09:00
+schtasks /Create /TN "OrderBOT paper dashboard" /TR "<full path to start-orderbot.cmd>" /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 09:00
 ```
 
 The task runs only while you are signed in to Windows. A second start exits at once because the dashboard port is in use.

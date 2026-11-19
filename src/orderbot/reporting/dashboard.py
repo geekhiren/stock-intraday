@@ -202,6 +202,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._json(200, {"halted": reason is not None, "reason": reason})
 
 
+class _SingleServer(ThreadingHTTPServer):
+    # With address reuse on, Windows lets a second dashboard bind the same port and both would trade the journal.
+    allow_reuse_address = False
+
+
 def make_server(config: Config, path: Path, *, clock=now_ist, fixture=False, port=None, movers=None,
                 stocks=None, backtest=None) -> ThreadingHTTPServer:
     """`movers()` returns the stock scan, `stocks` is the stock paper trader and `backtest(symbols, start, end)` replays history."""
@@ -209,4 +214,4 @@ def make_server(config: Config, path: Path, *, clock=now_ist, fixture=False, por
         raise ValueError("The dashboard in this build requires paper mode.")
     handler = partial(DashboardHandler, config=config, path=path, clock=clock, fixture=fixture,
                       stop_token=token_urlsafe(), movers=movers, stocks=stocks, backtest=backtest)
-    return ThreadingHTTPServer(("127.0.0.1", config.reporting.dashboard_port if port is None else port), handler)
+    return _SingleServer(("127.0.0.1", config.reporting.dashboard_port if port is None else port), handler)

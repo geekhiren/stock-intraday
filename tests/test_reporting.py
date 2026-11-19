@@ -209,3 +209,10 @@ def test_movers_rank_gainers_losers_and_skip_unusable_quotes():
             {"exch_seg": "NSE", "instrumenttype": "", "name": "SBIN", "token": "9", "symbol": "SBIN-BL"},
             {"exch_seg": "NSE", "instrumenttype": "", "name": "NOFUT", "token": "7", "symbol": "NOFUT-EQ"}]
     assert stock_universe(rows) == {"3045": "SBIN"}
+
+
+def test_a_second_dashboard_cannot_share_the_port(tmp_path):
+    db, at = seed(tmp_path)
+    with make_server(CONFIG, db, clock=lambda: at, fixture=True, port=0) as server:
+        with pytest.raises(OSError):
+            make_server(CONFIG, db, clock=lambda: at, fixture=True, port=server.server_port)
