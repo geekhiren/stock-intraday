@@ -9,9 +9,13 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
+import json
 from pathlib import Path
 
-from orderbot.core.config import Config
+from pydantic import ValidationError
+
+from orderbot.core.atomic_file import atomic_path
+from orderbot.core.config import Config, StocksConfig
 from orderbot.core.ist_time import as_ist, from_storage, to_storage
 from orderbot.core.money import PAISA, round_inr
 from orderbot.core.state_store import open_store
@@ -22,6 +26,10 @@ from orderbot.reporting.alerts import queue_alert
 # and the opening range is the day high/low at the first scan after the freeze. Move to the tick feed
 # (ws_client) and history candles before trusting results to the rupee.
 FREEZE_GRACE = timedelta(minutes=2)
+# What the dashboard's Settings screen may change. Everything else stays in config.yaml.
+SETTING_KEYS = ("capital_inr", "risk_per_trade_pct", "max_positions", "sip_entries", "vwap_entries", "exit_on_rsi",
+                "exit_on_vwap_cross", "watchlist_only")
+MAX_RISK_PCT = Decimal("2")  # the Settings screen cannot raise risk per trade beyond this
 MAX_SAMPLE_GAP = timedelta(seconds=150)
 
 
@@ -167,13 +175,20 @@ class _Candidate:
 
 
 class StockPaperTrader:
-    def __init__(self, config: Config, db: Path, *, activity=None):
-        """`activity(job, message)` receives entries and exits for the dashboard's job log."""
-        self.config, self.db, self.activity = config, db, activity
+    def __init__(self, config: Config, db: Path, *, activity=None, settings_path: Path | None = None):
+        """`activity(job, message)` receives entries and exits for the dashboard's job log. `settings_path` holds
+        the Settings screen's saved choices, applied over `config.stocks`."""
+        self._base, self.config, self.db, self.activity, self.settings_path = config, config, db, activity, settings_path
+        if settings_path is not None and settings_path.is_file():
+            try:
+                self.config = self._with(json.loads(settings_path.read_text(encoding="utf-8")))
+            except (OSError, ValueError):
+                pass  # an unreadable or outdated file falls back to config.yaml
         self.status = "Waiting for the first scan"
         self._series: dict[str, _Series] = {}
         self._marks: dict[str, Decimal] = {}
         self._ticks: dict[str, Tick] = {}
+        self._names: dict[str, str] = {}
         self._last_at: datetime | None = None
         self._baselines: dict[str, tuple[Decimal, Decimal]] = {}
         self._baseline_day: date | None = None
@@ -186,9 +201,44 @@ class StockPaperTrader:
         self._baselines, self._baseline_day, self.baseline_status = baselines, day, None
         self.watchlist = list(watchlist)
 
+    # -- settings from the dashboard ----------------------------------------------------------------
+    def _with(self, overrides: dict) -> Config:
+        unknown = sorted(set(overrides) - set(SETTING_KEYS))
+        if unknown:
+            raise ValueError("These settings cannot be changed here: " + ", ".join(unknown) + ".")
+        try:
+            stocks = StocksConfig.model_validate(self._base.stocks.model_dump() | overrides)
+        except ValidationError as exc:
+            raise ValueError("; ".join(f"{error['loc'][0]}: {error['msg']}" for error in exc.errors())) from None
+        if stocks.risk_per_trade_pct > MAX_RISK_PCT:
+            raise ValueError(f"Risk per trade is limited to {MAX_RISK_PCT}% of capital.")
+        return self._base.model_copy(update={"stocks": stocks})
+
+    def settings(self) -> dict:
+        def values(stocks):
+            return {key: value if isinstance(value, (bool, int)) else str(value)
+                    for key in SETTING_KEYS for value in [getattr(stocks, key)]}
+        return {"values": values(self.config.stocks), "defaults": values(self._base.stocks), "max_risk_pct": str(MAX_RISK_PCT)}
+
+    def apply_settings(self, changes: dict) -> dict:
+        """Validate, save and apply Settings-screen changes. Open positions keep their existing stop and size."""
+        merged = self.settings()["values"] | changes
+        config = self._with(merged)
+        if self.settings_path is not None:
+            with atomic_path(self.settings_path) as temporary:
+                temporary.write_text(json.dumps(self._with_values(config)), encoding="utf-8")
+        self.config = config
+        return self.settings()
+
+    @staticmethod
+    def _with_values(config: Config) -> dict:
+        return {key: value if isinstance(value, (bool, int)) else str(value)
+                for key in SETTING_KEYS for value in [getattr(config.stocks, key)]}
+
     # -- per-scan entry point -------------------------------------------------------------------
     def on_scan(self, quotes, universe: dict[str, str], at: datetime) -> None:
         now, ticks = as_ist(at), self._parse(quotes, universe)
+        self._names = universe  # token -> symbol, also for stocks with no usable quote right now
         if self._last_at is None or now.date() != self._last_at.date() or now - self._last_at > MAX_SAMPLE_GAP:
             self._series.clear()  # a gap would corrupt minute-based volume, RSI and crossover checks
         self._last_at, self._ticks = now, ticks
@@ -504,6 +554,17 @@ class StockPaperTrader:
             rows = connection.execute("SELECT * FROM stock_trades WHERE session_day=? OR exit_at_utc IS NULL ORDER BY trade_id",
                                       (now.date().isoformat(),)).fetchall()
             stats = strategy_stats(connection)
+            today = now.date()
+            periods = []
+            for name, start in (("Today", today), ("This week", today - timedelta(days=today.weekday())),
+                                ("This month", today.replace(day=1))):
+                count, wins, net = connection.execute("""
+                    SELECT COUNT(*), COALESCE(SUM(net_paise > 0), 0), COALESCE(SUM(net_paise), 0) FROM stock_trades
+                    WHERE exit_at_utc IS NOT NULL AND session_day >= ?
+                """, (start.isoformat(),)).fetchone()
+                periods.append({"name": name, "from": start.isoformat(), "trades": count, "wins": wins, "net_paise": net})
+            play_rows = connection.execute("SELECT * FROM stock_plays WHERE session_day=? ORDER BY relative_volume DESC",
+                                           (today.isoformat(),)).fetchall()
             curve = [{"day": day, "strategy": strategy, "net_paise": net} for day, strategy, net in connection.execute("""
                 SELECT session_day, strategy, SUM(net_paise) FROM stock_trades WHERE exit_at_utc IS NOT NULL
                 GROUP BY session_day, strategy ORDER BY session_day, strategy
@@ -520,6 +581,23 @@ class StockPaperTrader:
             }
 
         closed = [view(row) for row in rows if row["exit_at_utc"]]
+        traded = {row["token"] for row in rows if row["strategy"] == "sip" and row["session_day"] == today.isoformat()}
+        plays = [{
+            "symbol": self._names.get(row["token"], row["token"]), "side": row["side"],
+            "level": row["edge"], "stop_distance": row["stop_distance"], "relative_volume": round(row["relative_volume"], 2),
+            "last": str(self._marks[row["token"]]) if row["token"] in self._marks else None,
+            "state": "waiting" if row["state"] == "waiting" else "traded" if row["token"] in traded else "triggered",
+        } for row in play_rows if row["token"]]
+        scan_at = (datetime.combine(today, self.config.market.session_open, now.tzinfo)
+                   + timedelta(minutes=stocks.sip_range_minutes))
+        play_note = None
+        if not stocks.sip_entries:
+            play_note = "Stocks in play is switched off in Settings."
+        elif not play_rows:
+            play_note = (f"The scan runs at {scan_at:%H:%M} IST." if now < scan_at else
+                         f"Missed today: the bot or its 14-session history was not ready at {scan_at:%H:%M}.")
+        elif not plays:
+            play_note = "No stock had above-normal opening volume today."
         changes = {tick.symbol: float(round(100 * (tick.ltp / tick.previous_close - 1), 2)) for tick in self._ticks.values()}
         return {
             "status": self.status, "capital_paise": int(stocks.capital_inr / PAISA),
@@ -527,6 +605,7 @@ class StockPaperTrader:
             "loss_limit_paise": int(stocks.capital_inr * self.config.risk.daily_loss_limit_pct / 100 / PAISA),
             "net_paise": sum(trade["net_paise"] for trade in closed),
             "open": [view(row) for row in rows if not row["exit_at_utc"]], "trades": closed, "stats": stats, "curve": curve,
+            "periods": periods, "plays": plays, "play_note": play_note, "settings": self.settings(),
             "watchlist": [row | {"today_pct": changes.get(row["symbol"])} for row in self.watchlist]
             if self._baseline_day == now.date() else [],
         }

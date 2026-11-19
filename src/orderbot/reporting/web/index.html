@@ -21,6 +21,7 @@
       <a class="nav-item" href="#backtest" data-tab="backtest">Backtest</a>
       <h4>System</h4>
       <a class="nav-item" href="#jobs" data-tab="jobs">Background jobs</a>
+      <a class="nav-item" href="#settings" data-tab="settings">Settings</a>
     </nav>
     <div class="side-card"><strong class="pill brand" id="mode">PAPER</strong><p>Practice money only. No orders reach the broker.</p></div>
   </aside>
@@ -59,6 +60,7 @@
           <p id="breadth-note" class="muted">&nbsp;</p>
         </section>
       </div>
+      <div id="periods" class="periods"></div>
       <section class="panel" aria-labelledby="trades-stock-title">
         <div class="section-heading"><h2 id="trades-stock-title">Paper trades today</h2>
           <form id="manual" class="inline-form">
@@ -68,9 +70,15 @@
             <button type="submit" value="short" class="btn">Sell short</button>
           </form>
         </div>
-        <p id="manual-message" class="muted form-message" aria-live="polite">The bot also trades automatically. Up to 2 positions of ₹50,000 each. A manual trade uses the same ₹ risk, stop, target and auto exit.</p>
+        <p id="manual-message" class="muted form-message" aria-live="polite">The bot also trades automatically. A manual trade uses the same ₹ risk, stop, target and auto exit. Position count and capital are in Settings.</p>
+        <div id="position-cards" class="position-cards"></div>
         <div class="table-scroll"><table><thead><tr><th scope="col">Stock</th><th scope="col">Setup</th><th scope="col" class="right">Qty</th><th scope="col" class="right">Entry</th><th scope="col" class="right">Stop</th><th scope="col" class="right">Target</th><th scope="col" class="right">Last / exit</th><th scope="col">Status</th><th scope="col" class="right">Net P&amp;L</th></tr></thead><tbody id="stock-trades"></tbody></table></div>
         <p class="muted footnote">Simulated fills from one-minute quotes with full intraday charges. No orders reach the broker.</p>
+      </section>
+      <section class="panel" aria-labelledby="plays-title">
+        <div class="section-heading"><h2 id="plays-title">Stocks in play today</h2><p id="plays-note"></p></div>
+        <div class="table-scroll"><table><thead><tr><th scope="col">Stock</th><th scope="col">Direction</th><th scope="col" class="right">Opening volume</th><th scope="col" class="right">Breakout level</th><th scope="col" class="right">Last price</th><th scope="col" class="right">Stop distance</th><th scope="col">Status</th></tr></thead><tbody id="plays"></tbody></table></div>
+        <p class="muted footnote">The busiest stocks of the first five minutes. Each is traded once, when its price passes the breakout level.</p>
       </section>
       <section class="panel" aria-labelledby="curve-title">
         <div class="section-heading"><h2 id="curve-title">Paper P&amp;L over time</h2><p>Running total after charges, by strategy</p></div>
@@ -167,10 +175,38 @@
         <div class="section-heading"><h2 id="backtest-stats-title">Backtest accuracy</h2><p id="backtest-range"></p></div>
         <div class="table-scroll"><table><thead><tr><th scope="col">Strategy</th><th scope="col" class="right">Trades</th><th scope="col" class="right">Won</th><th scope="col" class="right">Accuracy</th><th scope="col" class="right">Avg win</th><th scope="col" class="right">Avg loss</th><th scope="col" class="right">Profit factor</th><th scope="col" class="right">Net P&amp;L</th></tr></thead><tbody id="backtest-stats"></tbody></table></div>
       </section>
+      <section class="panel" aria-labelledby="backtest-history-title">
+        <div class="section-heading"><h2 id="backtest-history-title">Past runs</h2><p>The last 20 backtests, newest first</p></div>
+        <div class="table-scroll"><table><thead><tr><th scope="col">Run</th><th scope="col">Period</th><th scope="col">Stocks</th><th scope="col">Settings</th><th scope="col" class="right">Trades</th><th scope="col" class="right">Accuracy</th><th scope="col" class="right">Profit factor</th><th scope="col" class="right">Net P&amp;L</th></tr></thead><tbody id="backtest-history"></tbody></table></div>
+      </section>
       <section class="panel" aria-labelledby="backtest-trades-title">
         <h2 id="backtest-trades-title">Backtest trades</h2>
         <div class="table-scroll"><table><thead><tr><th scope="col">Entry IST</th><th scope="col">Stock</th><th scope="col">Setup</th><th scope="col" class="right">Qty</th><th scope="col" class="right">Entry</th><th scope="col" class="right">Exit</th><th scope="col">Exit reason</th><th scope="col" class="right">Net P&amp;L</th></tr></thead><tbody id="backtest-trades"></tbody></table></div>
         <p class="muted footnote">Fills assume a one-tick spread at each candle close, and stops are checked once a minute. Past results do not promise future profit.</p>
+      </section>
+    </div>
+
+    <div class="page" data-page="settings" hidden>
+      <div class="title-row"><h1>Settings</h1><p>Stock paper trading</p></div>
+      <section class="panel" aria-labelledby="settings-title">
+        <h2 id="settings-title">Money and risk</h2>
+        <form id="settings-form">
+          <div class="fields">
+            <label class="f" for="set-capital_inr">Capital (₹)<input id="set-capital_inr" name="capital_inr" type="number" min="1000" step="1000" required></label>
+            <label class="f" for="set-risk_per_trade_pct">Risk per trade (% of capital)<input id="set-risk_per_trade_pct" name="risk_per_trade_pct" type="number" min="0.1" max="2" step="0.1" required></label>
+            <label class="f" for="set-max_positions">Positions at once<input id="set-max_positions" name="max_positions" type="number" min="1" max="5" step="1" required></label>
+          </div>
+          <h2 class="spaced">Strategies and exits</h2>
+          <div class="switches">
+            <label class="sw"><input type="checkbox" name="sip_entries"><span>Stocks in play<small>Trade the busiest stocks of the first five minutes on a breakout.</small></span></label>
+            <label class="sw"><input type="checkbox" name="vwap_entries"><span>VWAP crossover<small>Lost money in every backtest so far.</small></span></label>
+            <label class="sw"><input type="checkbox" name="exit_on_rsi"><span>Exit when RSI is stretched<small>Closes winners early. Lost in both backtest periods.</small></span></label>
+            <label class="sw"><input type="checkbox" name="exit_on_vwap_cross"><span>Exit when price crosses back through VWAP<small>Mixed in backtests.</small></span></label>
+            <label class="sw"><input type="checkbox" name="watchlist_only"><span>Trade only today's watchlist<small>Mixed in backtests.</small></span></label>
+          </div>
+          <div class="form-foot"><button type="submit" class="btn primary">Save settings</button><button id="settings-reset" type="button" class="btn">Back to defaults</button></div>
+          <p id="settings-message" class="muted form-message" aria-live="polite">Changes apply to new trades and to backtests. Open positions keep their size and stop. Each position gets an equal share of the capital.</p>
+        </form>
       </section>
     </div>
 

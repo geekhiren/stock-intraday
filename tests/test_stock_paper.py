@@ -2,6 +2,8 @@ from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from orderbot.core.config import load_config
 from orderbot.core.ist_time import parse_timestamp
 from orderbot.execution.exit_store import ExitStore
@@ -197,3 +199,29 @@ def test_watchlist_scores_indicator_exits_and_daily_report(tmp_path):
     assert [(row["symbol"], row["exit_reason"]) for row in report["stock_trades"]] == [("ALPHA", "vwap_cross")]
     assert report["stock_net_paise"] == trade["net_paise"] < 0
     assert "## Stock intraday paper trades" in render_markdown(report) and "0 won of 1" in render_markdown(report)
+
+
+def test_settings_are_validated_saved_and_applied_and_summaries_report_periods(tmp_path):
+    path = tmp_path / "stock-settings.json"
+    trader = StockPaperTrader(CONFIG, tmp_path / "stocks.sqlite3", settings_path=path)
+    assert trader.settings()["values"]["capital_inr"] == "100000" and trader.settings()["values"]["max_positions"] == 2
+    for bad in ({"risk_per_trade_pct": "5"}, {"capital_inr": "-1"}, {"paper_trading": False}, {"sip_entries": "yes"}):
+        with pytest.raises(ValueError):
+            trader.apply_settings(bad)
+    assert not path.exists()
+    saved = trader.apply_settings({"capital_inr": "200000", "max_positions": 1, "sip_entries": False})
+    assert saved["values"]["capital_inr"] == "200000" and saved["defaults"]["capital_inr"] == "100000"
+    restarted = StockPaperTrader(CONFIG, tmp_path / "stocks.sqlite3", settings_path=path)
+    assert restarted.config.stocks.capital_inr == 200000 and restarted.config.stocks.sip_entries is False
+
+    at = parse_timestamp("2026-11-30T11:00:00+05:30")
+    restarted.on_scan([alpha(200.0)], UNIVERSE, at)
+    assert restarted.manual_entry("ALPHA", "long", at) is None
+    position, = restarted.snapshot(at)["open"]
+    assert position["quantity"] == 833  # 0.5% of ₹2,00,000 is ₹1,000 of risk over a 1.20 stop; the single ₹2,00,000 slot allows it
+    restarted.on_scan([alpha(200.5)], UNIVERSE, at + MINUTE)
+    assert restarted.manual_exit(position["trade_id"], at + MINUTE) is None
+    book = restarted.snapshot(at + MINUTE)
+    assert [(period["name"], period["trades"], period["wins"]) for period in book["periods"]] == [
+        ("Today", 1, 1), ("This week", 1, 1), ("This month", 1, 1)]
+    assert book["plays"] == [] and book["play_note"] == "Stocks in play is switched off in Settings."

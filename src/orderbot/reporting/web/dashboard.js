@@ -302,6 +302,118 @@ function closeButton(trade) {
   return button;
 }
 
+function renderPeriods(periods) {
+  byId('periods').replaceChildren(...periods.map((period) => {
+    const tile = element('section', undefined, 'panel tile');
+    const accuracy = period.trades ? `${Math.round(100 * period.wins / period.trades)}% accuracy` : 'no closed trades';
+    tile.append(element('h2', period.name), element('b', money(period.net_paise), tone(period.net_paise)),
+      element('span', `${period.trades} trade${period.trades === 1 ? '' : 's'} · ${accuracy}`));
+    tile.title = `Since ${ukDate(period.from)}`;
+    return tile;
+  }));
+}
+
+function heldFor(entryAt, now) {
+  const minutes = Math.max(0, Math.round((new Date(now) - new Date(entryAt)) / 60000));
+  return minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
+}
+
+function renderPositionCards(open, now) {
+  byId('position-cards').replaceChildren(...open.map((trade) => {
+    const direction = trade.side === 'long' ? 1 : -1;
+    const entry = Number(trade.entry);
+    const stop = Number(trade.stop);
+    const mark = trade.mark === null ? entry : Number(trade.mark);
+    const live = Math.round(direction * (mark - entry) * trade.quantity * 100);
+    const cushion = Math.abs(entry - stop);
+    const left = Math.min(1, Math.max(0, direction * (mark - stop) / (2 * cushion)));  // 0 at the stop, half at entry
+    const card = element('div', undefined, 'position-card');
+    const head = element('header');
+    head.append(element('b', `${trade.symbol} · ${trade.side === 'long' ? 'Buy' : 'Short'} ${trade.quantity}`),
+      element('small', `Held ${heldFor(trade.entry_at, now)}`));
+    const meter = element('div', undefined, 'meter');
+    meter.style.setProperty('--fill', left.toFixed(3));
+    meter.title = `${(100 * direction * (mark - stop) / cushion).toFixed(0)}% of the stop distance left`;
+    const ends = element('div', undefined, 'meter-ends');
+    ends.append(element('span', `Stop ${price(trade.stop)}`), element('span', `Entry ${price(trade.entry)}`),
+      element('span', trade.target ? `Target ${price(trade.target)}` : 'No target'));
+    card.append(head, element('div', money(live), `live ${tone(live)}`),
+      element('small', `Live P&L before charges · last price ${price(trade.mark)}`), meter, ends);
+    return card;
+  }));
+}
+
+function renderPlays(stocks) {
+  const states = { waiting: 'Waiting for breakout', traded: 'Traded', triggered: 'Broke out, not taken' };
+  byId('plays-note').textContent = stocks ? stocks.play_note || `${stocks.plays.length} candidates` : '';
+  renderTable('plays', (stocks ? stocks.plays : []).map((play) => {
+    const badge = element('span', states[play.state], 'pill');
+    if (play.state === 'traded') badge.classList.add('ok');
+    return [[play.symbol], [play.side === 'long' ? 'Buy above' : 'Short below'], [`${play.relative_volume.toFixed(1)}× usual`, 'right'],
+      [price(play.level), 'right'], [price(play.last), 'right'], [price(play.stop_distance), 'right'], [badge]];
+  }), 7, stocks && stocks.play_note ? stocks.play_note : 'No candidates today.');
+}
+
+const settingsForm = byId('settings-form');
+let settingsShown = '';
+function renderSettings(settings) {
+  const key = JSON.stringify(settings);
+  if (!settings || key === settingsShown || settingsForm.contains(document.activeElement)) return;  // never overwrite while editing
+  settingsShown = key;
+  for (const [name, value] of Object.entries(settings.values)) {
+    const field = settingsForm.elements[name];
+    if (!field) continue;
+    if (field.type === 'checkbox') field.checked = value;
+    else field.value = value;
+  }
+  settingsForm.elements.risk_per_trade_pct.max = settings.max_risk_pct;
+  settingsForm.dataset.defaults = JSON.stringify(settings.defaults);
+  settingsForm.dataset.values = JSON.stringify(settings.values);
+}
+
+function settingsFromForm() {
+  const values = {};
+  for (const field of settingsForm.elements) {
+    if (!field.name) continue;
+    values[field.name] = field.type === 'checkbox' ? field.checked : field.name === 'max_positions' ? Number(field.value) : field.value;
+  }
+  return values;
+}
+
+async function saveSettings(wanted) {
+  const current = JSON.parse(settingsForm.dataset.values || '{}');
+  const changes = Object.fromEntries(Object.entries(wanted).filter(([name, value]) => String(current[name]) !== String(value)));
+  const message = byId('settings-message');
+  if (!Object.keys(changes).length) { message.textContent = 'Nothing changed.'; return; }
+  const summary = Object.entries(changes).map(([name, value]) => `${label(name)}: ${current[name]} → ${value}`).join('\n');
+  if (!window.confirm(`Apply these changes to paper trading?\n\n${summary}`)) return;
+  try {
+    await post('/api/stock-settings', changes);
+    settingsShown = '';
+    document.activeElement.blur();
+    message.textContent = 'Saved. New trades and backtests use these settings.';
+  } catch (error) {
+    message.textContent = error.message;
+  }
+  refresh();
+}
+settingsForm.addEventListener('submit', (event) => { event.preventDefault(); saveSettings(settingsFromForm()); });
+byId('settings-reset').addEventListener('click', () => saveSettings(JSON.parse(settingsForm.dataset.defaults || '{}')));
+
+function renderBacktestHistory(runs) {
+  const switches = { sip_entries: 'Stocks in play', vwap_entries: 'VWAP', exit_on_rsi: 'RSI exit', exit_on_vwap_cross: 'VWAP exit', watchlist_only: 'Watchlist only' };
+  renderTable('backtest-history', runs.map((run) => {
+    const all = run.stats.find((line) => line.strategy === 'all');
+    const on = Object.entries(switches).filter(([name]) => run.settings[name]).map(([, text]) => text).join(', ') || 'Opening range only';
+    const setup = `${run.settings.max_positions} × ₹${indian.format(Math.round(run.settings.capital_inr / run.settings.max_positions))} · ${run.settings.risk_per_trade_pct}% risk · ${on}`;
+    return [[`${ukDate(run.at)} ${localTime(run.at)}`], [`${ukDate(run.from)} to ${ukDate(run.to)} · ${run.sessions} sessions`],
+      [`${run.symbols.length} stocks`, '', run.symbols.join(', ')], [setup, 'wrap'],
+      [all ? all.trades : 0, 'right'], [all ? `${all.win_rate.toFixed(1)}%` : '—', 'right'],
+      [all && all.profit_factor !== null ? all.profit_factor.toFixed(2) : '—', 'right'],
+      [all ? money(all.net_paise) : '—', `right ${all ? tone(all.net_paise) : ''}`]];
+  }), 8, 'No backtests have been run yet.');
+}
+
 function renderStocks(stocks) {
   byId('stocks-status').textContent = stocks ? stocks.status : 'Stock paper trading is off in this session';
   const net = stocks ? stocks.net_paise : null;
@@ -318,6 +430,9 @@ function renderStocks(stocks) {
   byId('stocks-total').className = `tile-value ${all ? tone(all.net_paise) : ''}`;
   byId('stocks-total-note').textContent = all ? `Net of charges over ${all.trades} trades` : 'Forward test starts with the first trade';
   renderCurve(stocks ? stocks.curve : []);
+  renderPeriods(stocks ? stocks.periods : []);
+  renderPlays(stocks);
+  renderSettings(stocks ? stocks.settings : null);
   renderStats('forward-stats', stats, 'No closed paper trades yet. Results build up as the bot trades each day.');
   const percent = (value) => (value === null || value === undefined ? '—' : `${value > 0 ? '+' : value < 0 ? '−' : ''}${Math.abs(value).toFixed(2)}%`);
   renderTable('watchlist', (stocks ? stocks.watchlist : []).map((row) => [
@@ -477,6 +592,8 @@ function render(state) {
   renderMovers(state.movers);
   renderStocks(state.stocks);
   renderJobs(state.activity || []);
+  renderBacktestHistory(state.backtests || []);
+  renderPositionCards(state.stocks ? state.stocks.open : [], state.now);
 
   byId('net').textContent = money(state.net_paise);
   byId('net').className = `big-value ${tone(state.net_paise)}`;

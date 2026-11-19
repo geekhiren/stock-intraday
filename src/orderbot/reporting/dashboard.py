@@ -163,7 +163,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     0 <= (self.clock() - parse_timestamp(movers["at"])).total_seconds() < 180
                 ):
                     value["broker"] = {"state": "connected", "observed_at": movers["at"]}
-                self._json(200, value | {"stop_token": self.stop_token, "movers": movers, "activity": recent()})
+                history = getattr(self.movers, "backtest_history", None)
+                self._json(200, value | {"stop_token": self.stop_token, "movers": movers, "activity": recent(),
+                                         "backtests": history() if history else []})
         else:
             self._json(404, {"error": "Page not found."})
 
@@ -178,6 +180,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if not start <= end <= self.clock().date() or end - start > timedelta(days=MAX_BACKTEST_DAYS):
                 raise ValueError(f"Choose a past date range of at most {MAX_BACKTEST_DAYS} days.")
             return self.backtest(symbols, start, end)
+        if self.path == "/api/stock-settings":
+            if not isinstance(body, dict) or not body:
+                raise ValueError("No setting was changed.")
+            result = self.stocks.apply_settings(body)
+            record("Settings", "Changed " + ", ".join(f"{key} to {value}" for key, value in body.items()))
+            return result
         if self.path == "/api/stock-entry":
             refusal = self.stocks.manual_entry(body["symbol"].strip().upper(), body["side"], self.clock())
         else:
@@ -192,7 +200,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             compare_digest(token, self.stop_token.encode("ascii"))
         ):
             self._json(403, {"error": "Use the stop control on the local dashboard."})
-        elif self.path in {"/api/stock-entry", "/api/stock-exit", "/api/backtest"}:
+        elif self.path in {"/api/stock-entry", "/api/stock-exit", "/api/backtest", "/api/stock-settings"}:
             try:
                 self._json(200, self._action(json.loads(self.rfile.read(min(int(self.headers.get("Content-Length", 0)), 4096)))))
             except (ValueError, KeyError, TypeError, AttributeError, RequestError) as exc:

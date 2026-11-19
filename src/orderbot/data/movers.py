@@ -28,6 +28,7 @@ WATCH_SECONDS = 5
 TOP = 8
 HISTORY_SPAN_DAYS = 28  # one SmartAPI minute-history request; also covers the 14 sessions the baselines need
 BACKTEST_LOOKBACK_DAYS = HISTORY_SPAN_DAYS  # earlier candles that supply the previous close and the baselines
+BACKTEST_HISTORY = 20  # past runs kept for comparison
 LOGIN_ATTEMPTS = 3  # stop before repeated bad logins can lock the broker account
 
 
@@ -210,9 +211,34 @@ class MoversScanner:
                 tokens[symbol], since, until, lambda since=since, until=until: self.client.historical_minutes(
                     self._credentials, self._session, "NSE", tokens[symbol], since, until)))]
             record("Backtest", f"Fetched candles for {symbol} ({len(candles)} of {len(symbols)})")
-        result = backtest(self.config, candles, start)
+        config = self.trader.config if self.trader else self.config  # the Settings screen's choices apply to backtests too
+        result = backtest(config, candles, start)
         record("Backtest", f"Finished · {len(result['trades'])} trades over {result['sessions']} sessions")
+        self._remember(result, config)
         return result
+
+    def _history_path(self) -> Path:
+        return (self.trader.db if self.trader else self.directory / self.config.storage.sqlite_path).with_name("backtest-history.json")
+
+    def backtest_history(self) -> list[dict]:
+        """Summaries of the last backtests, newest first, for side-by-side comparison."""
+        try:
+            return json.loads(self._history_path().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+
+    def _remember(self, result: dict, config) -> None:
+        stocks = config.stocks
+        entry = {
+            "at": self.clock().isoformat(), "symbols": result["symbols"], "from": result["from"], "to": result["to"],
+            "sessions": result["sessions"], "stats": result["stats"],
+            "settings": {"capital_inr": str(stocks.capital_inr), "risk_per_trade_pct": str(stocks.risk_per_trade_pct),
+                         "max_positions": stocks.max_positions, "sip_entries": stocks.sip_entries, "vwap_entries": stocks.vwap_entries,
+                         "exit_on_rsi": stocks.exit_on_rsi, "exit_on_vwap_cross": stocks.exit_on_vwap_cross,
+                         "watchlist_only": stocks.watchlist_only},
+        }
+        with atomic_path(self._history_path()) as temporary:
+            temporary.write_text(json.dumps([entry, *self.backtest_history()][:BACKTEST_HISTORY]), encoding="utf-8")
 
     def _fail(self, state: str, message: str) -> None:
         self._session = None
@@ -257,7 +283,8 @@ class MoversScanner:
 
 @contextmanager
 def movers_worker(config, directory: Path, db: Path):
-    trader = StockPaperTrader(config, db, activity=record) if config.stocks.paper_trading else None
+    trader = StockPaperTrader(config, db, activity=record, settings_path=db.with_name("stock-settings.json")) \
+        if config.stocks.paper_trading else None
     scanner, stopped = MoversScanner(config, directory, trader=trader), Event()
     Thread(target=scanner.run, args=(stopped,), name="orderbot-movers", daemon=True).start()
     try:
