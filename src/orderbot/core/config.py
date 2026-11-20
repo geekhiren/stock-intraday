@@ -425,6 +425,7 @@ class PaperTrialConfig(Section):
     quote_window_wings: PositiveCount
     market_verification_symbol: Annotated[str, StringConstraints(pattern=r"^[A-Z0-9&-]+$")]
     market_verification_minutes: Annotated[int, Field(strict=True, ge=1, le=30)]
+    market_verification_history_retries: Annotated[int, Field(strict=True, ge=0, le=3)]
     output_directory: Path
 
     @model_validator(mode="after")

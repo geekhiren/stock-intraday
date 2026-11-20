@@ -35,9 +35,10 @@ Provide a JSON calendar with an ordered `trading_sessions` array of ISO dates an
 ```powershell
 python run.py --verify-market-data 'C:\path\to\nse-calendar.json'
 python run.py --verify-market-data 'C:\path\to\nse-calendar.json' --session-date YYYY-MM-DD
+python run.py --verify-market-data 'C:\path\to\nse-calendar.json' --session-date YYYY-MM-DD --retry-candles
 ```
 
-The probe uses the dashboard's session and makes two quote reads and up to two history reads. It checks a cash stock, NIFTY spot, the near-month future and the two nearest at-the-money option legs. The closing delay excludes unfinished candles. The JSON report is saved under `paper_trial.output_directory`. A `local_overlap` of zero means no same-minute local comparison was possible. Use the existing real-data trial to compare a broader option-session capture. [SmartAPI market data](https://smartapi.angelone.in/docs/MarketData)
+The probe uses the dashboard's session. It saves the quote results before fetching history, then saves each completed candle check. It checks a cash stock, NIFTY spot, the near-month future and the listed at-the-money option legs. The closing delay excludes unfinished candles. If SmartAPI throttles history, the probe waits for the shared cooldown and retries pending checks within the configured retry limit. `--retry-candles` checks the original opening window without requesting quotes and saves a separate report. Reports are under `paper_trial.output_directory`. A `local_overlap` of zero means no same-minute local comparison was possible. [SmartAPI market data](https://smartapi.angelone.in/docs/MarketData)
 
 | Symptom | Check |
 | --- | --- |

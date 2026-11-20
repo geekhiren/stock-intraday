@@ -11,6 +11,7 @@ paper_trial:
   quote_window_wings: 8
   market_verification_symbol: RELIANCE
   market_verification_minutes: 5
+  market_verification_history_retries: 1
   output_directory: var/real-paper-trials
 market:
   underlying: NIFTY

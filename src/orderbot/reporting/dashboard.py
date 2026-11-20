@@ -219,7 +219,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
             try:
                 if verify is None:
                     raise ValueError("The live paper dashboard is required.")
-                self._json(200, verify())
+                length = int(self.headers.get("Content-Length", 0))
+                if not 0 <= length <= 4096:
+                    raise ValueError("Invalid market verification request size.")
+                body = json.loads(self.rfile.read(length)) if length else {}
+                if not isinstance(body, dict) or set(body) - {"stage", "segment", "candle_end"}:
+                    raise ValueError("Invalid market verification request.")
+                end = body.get("candle_end")
+                self._json(200, verify(stage=body.get("stage", "all"),
+                                       candle_end=parse_timestamp(end) if end is not None else None,
+                                       segment=body.get("segment")))
+            except TypeError:
+                self._json(400, {"error": "Invalid market verification request."})
             except (ValueError, RequestError) as exc:
                 self._json(409, {"error": str(exc)})
         elif self.path == "/api/broker":

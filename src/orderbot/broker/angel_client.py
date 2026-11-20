@@ -42,6 +42,10 @@ class RequestError(RuntimeError):
 class RateLimitError(RequestError):
     """SmartAPI account cooldown is active. Callers should defer their current job."""
 
+    def __init__(self, message: str, *, retry_after_seconds: int | None = None):
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
+
 
 @dataclass
 class _RestState:
@@ -259,7 +263,8 @@ class AngelClient:
 
     @staticmethod
     def _cooldown_error(seconds: float) -> RateLimitError:
-        return RateLimitError(f"SmartAPI rate-limit cooldown is active. Retry in {ceil(seconds)} seconds.")
+        delay = ceil(seconds)
+        return RateLimitError(f"SmartAPI rate-limit cooldown is active. Retry in {delay} seconds.", retry_after_seconds=delay)
 
     def _throttled(self, response, state: _RestState, clock):
         duration = self.config.rest_rate_limit_cooldown_seconds

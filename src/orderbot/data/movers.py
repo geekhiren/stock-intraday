@@ -182,10 +182,14 @@ class MoversScanner:
         self._check(generation)
         return result
 
-    def _quotes(self, generation, exchange, tokens):
+    def _quote_batches(self, generation, exchange, tokens):
         size = self.config.broker.rest_quote_token_limit
-        return [quote for start in range(0, len(tokens), size) for quote in self._fetch(
-            generation, self.client.quotes, exchange, tokens[start:start + size])]
+        for start in range(0, len(tokens), size):
+            batch = tokens[start:start + size]
+            yield batch, self._fetch(generation, self.client.quotes, exchange, batch)
+
+    def _quotes(self, generation, exchange, tokens):
+        return [quote for _, rows in self._quote_batches(generation, exchange, tokens) for quote in rows]
 
     def scan_once(self, generation: int | None = None, *, refresh_cash=True) -> None:
         with self._connection_lock:
@@ -317,8 +321,11 @@ class MoversScanner:
     def _stock_minutes(self, generation, token, start, end):
         return self._fetch(generation, self.client.historical_minutes, "NSE", token, start, end)
 
-    def verify_market_data(self) -> dict:
+    def verify_market_data(self, *, stage="all", candle_end=None, segment=None) -> dict:
         """Sample real NSE and NFO data through the running dashboard's shared SmartAPI session."""
+        if stage not in {"all", "quotes", "candles"} or (
+                segment is not None and (stage != "candles" or segment not in {"cash", "derivatives"})):
+            raise ValueError("Choose a valid market verification stage and segment.")
         config, now = (self.trader.config if self.trader else self.config), as_ist(self.clock())
         if config.runtime.mode != "paper" or config.runtime.live_enabled or any(
                 budget.capital_inr is not None or budget.risk_per_trade_pct is not None
@@ -328,10 +335,11 @@ class MoversScanner:
         if now.weekday() >= 5 or not cash.contains(now):
             raise ValueError("The verification requires the cash and F&O regular sessions to be open.")
         settings = config.paper_trial
-        end = minute_floor(now - timedelta(seconds=settings.finalize_delay_seconds))
+        finalized = minute_floor(now - timedelta(seconds=settings.finalize_delay_seconds))
+        end = as_ist(candle_end) if candle_end is not None else finalized
         start = end - settings.market_verification_minutes * MINUTE
-        if start < cash.opens_at:
-            raise ValueError("Wait until the closed-candle verification window is available.")
+        if not cash.opens_at <= start < end <= finalized or minute_floor(end) != end:
+            raise ValueError("The candle verification window must contain finalized minutes from today's regular session.")
         with self._connection_lock:
             generation, master, universe = self._generation, self._master, self._universe
             if self.paused or not self._session or not master or not universe or self._day != now.date():
@@ -341,52 +349,105 @@ class MoversScanner:
         if stock is None:
             raise ValueError(f"{name} is unavailable in the current instrument master.")
         future = master.front_future(now.date())
+        instruments = {"cash": (name, "NSE", stock), "derivatives": (future.symbol, "NFO", future.token)}
+        pending = [segment] if segment else list(instruments)
         report = {"mode": "PAPER", "risk_configured": False, "checked_at": now.isoformat(),
-                  "quotes": {}, "candles": {}, "issues": []}
-        cash_rows = {row["symbolToken"]: row for row in self._quotes(generation, "NSE", [stock, master.spot.token])}
-        if master.spot.token not in cash_rows:
-            raise ValueError("Angel One did not return NIFTY spot for the options probe.")
-        spot = float(cash_rows[master.spot.token]["ltp"])
-        expiry = min(item.expiry for item in master.options if item.expiry >= now.date())
-        listed = [item for item in master.options if item.expiry == expiry]
-        strike = min((item.strike for item in listed), key=lambda value: abs(float(value) - spot))
-        legs = [item for item in listed if item.strike == strike]
-        futures_tokens = [future.token, *(item.token for item in legs)]
-        fo_rows = {row["symbolToken"]: row for row in self._quotes(generation, "NFO", futures_tokens)}
-        # Evaluate each response at receive time. A recent API fetch never refreshes the exchange timestamp.
-        received = as_ist(self.clock())
-        targets = [(name, stock, cash_rows, cash), ("NIFTY spot", master.spot.token, cash_rows,
-                    TradingSession.from_config(now.date(), config.market))]
-        targets += [(item.symbol, item.token, fo_rows, TradingSession.from_config(
-                    now.date(), config.market, segment="derivatives", index_expiry=item.expiry)) for item in (future, *legs)]
-        for symbol, token, rows, window in targets:
-            row = rows.get(token)
-            state = quote_freshness(row.get("exchFeedTime") if row else None, received, window,
-                                    config.stocks.max_quote_age_seconds)
-            report["quotes"][symbol] = state | {"ltp": row.get("ltp") if row else None}
-            if not row or state["state"] != "fresh":
-                report["issues"].append(f"{symbol}: {'missing quote' if not row else state['state']}")
-        expected = {start + step * MINUTE for step in range(settings.market_verification_minutes)}
-        for symbol, exchange, token in ((name, "NSE", stock), (future.symbol, "NFO", future.token)):
+                  "quotes": {}, "candles": {}, "issues": [], "pending_candles": pending,
+                  "candle_window": {"start": start.isoformat(), "end_exclusive": end.isoformat()}}
+        if stage != "candles" and not self._verification_quotes(report, config, generation, master, future, stock, cash):
+            return report
+        if stage == "quotes":
+            return report
+        for market in tuple(pending):
+            symbol, exchange, token = instruments[market]
             try:
                 raw = self._fetch(generation, self.client.historical_minutes, exchange, token, start, end)
                 bars = {bar.at: bar for bar in parse_minutes(raw, start, end)}
-                local = {bar.at: bar for bar in parse_minutes(candle_store.load(symbol, now.date(), now.date()), start, end)}
-            except (RateLimitError, _Disconnected):
-                raise
-            except (RequestError, HistoryError, OSError, ValueError) as exc:
-                report["issues"].append(f"{symbol} history: {exc}" if isinstance(exc, (RequestError, HistoryError))
-                                        else f"{symbol} history: local data unavailable or malformed")
+            except RateLimitError as exc:
+                self._verification_cooldown(report, f"{market}_candles", exc)
+                break
+            except _Disconnected as exc:
+                report["issues"].append(f"{symbol} history: {exc}")
+                break
+            except (RequestError, HistoryError) as exc:
+                report["issues"].append(f"{symbol} history: {exc}")
                 continue
-            overlap = bars.keys() & local.keys()
-            missing = [stamp.isoformat() for stamp in sorted(expected - bars.keys())]
-            mismatches = [stamp.isoformat() for stamp in sorted(overlap) if bars[stamp] != local[stamp]]
-            report["candles"][symbol] = {"source": "Angel One ONE_MINUTE", "start": start.isoformat(),
-                                          "end_exclusive": end.isoformat(), "valid": len(bars), "missing": missing,
-                                          "local_overlap": len(overlap), "local_mismatches": mismatches}
-            if missing or mismatches:
-                report["issues"].append(f"{symbol} history: {len(missing)} missing, {len(mismatches)} local mismatches")
+            self._verification_candles(report, symbol, start, end, bars)
+            pending.remove(market)
         return report
+
+    def _verification_cooldown(self, report, stage, error):
+        delay = error.retry_after_seconds or self.config.broker.rest_rate_limit_cooldown_seconds
+        resume = as_ist(self.clock()) + timedelta(seconds=delay)
+        report["cooldown"] = {"stage": stage, "retry_after_seconds": delay, "resume_at_ist": resume.isoformat()}
+        report["issues"].append(f"{stage}: {error}")
+
+    def _verification_quotes(self, report, config, generation, master, future, stock, cash):
+        spot_key = "NIFTY spot"
+        market = config.market
+        cash_targets = {stock: (config.paper_trial.market_verification_symbol, cash),
+                        master.spot.token: (spot_key, TradingSession.from_config(cash.day, market))}
+        for exchange in ("NSE", "NFO"):
+            stage = "cash_quotes" if exchange == "NSE" else "derivatives_quotes"
+            targets = cash_targets
+            if exchange == "NFO":
+                spot = report["quotes"].get(spot_key, {}).get("ltp")
+                try:
+                    spot = float(spot)
+                except (ValueError, TypeError):
+                    spot = 0.0
+                contracts = [future]
+                if spot > 0:
+                    expiry = min((item.expiry for item in master.options if item.expiry >= cash.day), default=None)
+                    listed = [item for item in master.options if item.expiry == expiry]
+                    if listed:
+                        strike = min((item.strike for item in listed), key=lambda value: abs(float(value) - spot))
+                        contracts += [item for item in listed if item.strike == strike]
+                if len(contracts) == 1:
+                    report["issues"].append("The at-the-money options could not be selected for the quote check.")
+                targets = {item.token: (item.symbol, TradingSession.from_config(
+                    cash.day, market, segment="derivatives", index_expiry=item.expiry)) for item in contracts}
+            try:
+                for batch, raw in self._quote_batches(generation, exchange, list(targets)):
+                    received = as_ist(self.clock())
+                    rows = {row["symbolToken"]: row for row in raw}
+                    for token in batch:
+                        symbol, window = targets[token]
+                        row = rows.get(token)
+                        state = quote_freshness(row.get("exchFeedTime") if row else None, received, window,
+                                                config.stocks.max_quote_age_seconds)
+                        report["quotes"][symbol] = state | {"ltp": row.get("ltp") if row else None,
+                                                              "received_at_ist": received.isoformat()}
+                        if not row or state["state"] != "fresh":
+                            report["issues"].append(f"{symbol}: {'missing quote' if not row else state['state']}")
+            except RateLimitError as exc:
+                self._verification_cooldown(report, stage, exc)
+                return False
+            except (RequestError, _Disconnected) as exc:
+                report["issues"].append(f"{stage}: {exc}")
+                return False
+        return True
+
+    @staticmethod
+    def _verification_candles(report, symbol, start, end, bars):
+        expected = {start + index * MINUTE for index in range((end - start) // MINUTE)}
+        local = {}
+        local_state = "no_overlap"
+        try:
+            raw = candle_store.load(symbol, start.date(), end.date())
+            local = {bar.at: bar for bar in parse_minutes(raw, start, end)}
+        except (OSError, ValueError, TypeError):
+            local_state = "unavailable"
+            report["issues"].append(f"{symbol} local history: data is unavailable or malformed.")
+        overlap = bars.keys() & local.keys()
+        missing = [stamp.isoformat() for stamp in sorted(expected - bars.keys())]
+        mismatches = [stamp.isoformat() for stamp in sorted(overlap) if bars[stamp] != local[stamp]]
+        report["candles"][symbol] = {"source": "Angel One ONE_MINUTE", "start": start.isoformat(),
+                                      "end_exclusive": end.isoformat(), "valid": len(bars), "missing": missing,
+                                      "local_overlap": len(overlap), "local_mismatches": mismatches,
+                                      "local_comparison": "compared" if overlap else local_state}
+        if missing or mismatches:
+            report["issues"].append(f"{symbol} history: {len(missing)} missing, {len(mismatches)} local mismatches")
 
     def trade_chart(self, trade_id: int) -> dict:
         """Minute closes of the session of one paper trade, with its entry, stop, target and exit."""

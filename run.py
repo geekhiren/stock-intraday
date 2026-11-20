@@ -91,6 +91,7 @@ def main() -> int:
     parser.add_argument("--fixture-scenario", choices=("ohl_trade", "no_ohl_trade"), help="Select the fixture's opening gap")
     parser.add_argument("--through-close", action="store_true", help="Continue a real-data paper trial through market close")
     parser.add_argument("--session-date", type=date.fromisoformat, help="Wait for a dated through-close trial to open")
+    parser.add_argument("--retry-candles", action="store_true", help="Check the original opening candle window without requesting fresh quotes")
     args = parser.parse_args()
     if args.option_token and not args.capture_data:
         parser.error("--option-token requires --capture-data")
@@ -104,6 +105,8 @@ def main() -> int:
         parser.error("--through-close requires --real-paper-trial")
     if args.session_date and not (args.through_close or args.verify_market_data):
         parser.error("--session-date requires --through-close or --verify-market-data")
+    if args.retry_candles and not args.verify_market_data:
+        parser.error("--retry-candles requires --verify-market-data")
 
     try:
         config = load_config(args.config)
@@ -111,7 +114,8 @@ def main() -> int:
             raise ConfigError("This build requires paper mode.")
         directory = args.config.resolve().parent
         if args.verify_market_data:
-            result, passed = verify_market_session(config, directory, args.verify_market_data, day=args.session_date)
+            result, passed = verify_market_session(config, directory, args.verify_market_data, day=args.session_date,
+                                                   candles_only=args.retry_candles)
             print(json.dumps(result, indent=2))
             return 0 if passed else 1
         validate_runtime_paths(config, args.config)

@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from orderbot.broker.angel_client import Session
+from orderbot.broker.angel_client import RateLimitError, Session
 from orderbot.broker.instruments import parse_master
 from orderbot.core.config import load_config
 from orderbot.core.ist_time import parse_timestamp
@@ -76,3 +76,43 @@ def test_dashboard_probe_uses_fresh_broker_reads_and_compares_local_candles(tmp_
     with pytest.raises(ValueError, match="regular sessions"):
         scanner.verify_market_data()
     assert client.quotes.call_count == 2
+
+
+@pytest.mark.parametrize("blocked_phase, quote_count, history_count, candle_count", [
+    ("derivatives_quotes", 2, 0, 0),
+    ("derivatives_candles", 4, 2, 1),
+])
+def test_probe_keeps_partial_results_and_does_not_request_during_cooldown(
+        tmp_path, monkeypatch, blocked_phase, quote_count, history_count, candle_count):
+    now = parse_timestamp("2026-11-18T09:26:12+05:30")
+    client = Mock()
+    scanner = MoversScanner(CONFIG, tmp_path, client=client, clock=lambda: now)
+    scanner._master = parse_master(json.loads((ROOT / "tests/fixtures/instruments.json").read_text()), CONFIG.market.underlying)
+    scanner._universe, scanner._day = {"1": "RELIANCE"}, now.date()
+    scanner._session = Session("fake-jwt", "fake-refresh", "fake-feed")
+    monkeypatch.setenv("ORDERBOT_CANDLE_STORE", str(tmp_path / "local"))
+    candle_end = parse_timestamp("2026-11-18T09:20:00+05:30")
+    throttle = RateLimitError("Broker cooldown", retry_after_seconds=90)
+
+    def quotes(credentials, session, exchange, tokens, *, check):
+        if exchange == "NFO" and blocked_phase == "derivatives_quotes":
+            raise throttle
+        return [{"symbolToken": token, "ltp": 22150, "exchFeedTime": now.isoformat()} for token in tokens]
+
+    def history(credentials, session, exchange, token, start, end, *, check):
+        assert end == candle_end
+        if exchange == "NFO":
+            raise throttle
+        return [[start.isoformat(), 100, 101, 99, 100, 10]]
+
+    client.quotes.side_effect = quotes
+    client.historical_minutes.side_effect = history
+    report = scanner.verify_market_data(candle_end=candle_end)
+    assert len(report["quotes"]) == quote_count
+    assert all(quote["state"] == "fresh" for quote in report["quotes"].values())
+    assert client.historical_minutes.call_count == history_count
+    assert len(report["candles"]) == candle_count
+    assert report["cooldown"]["stage"] == blocked_phase
+    assert report["cooldown"]["retry_after_seconds"] == 90
+    assert report["candle_window"]["end_exclusive"] == candle_end.isoformat()
+    assert report["pending_candles"] == (["cash", "derivatives"] if not candle_count else ["derivatives"])
