@@ -1,15 +1,53 @@
 """Use imported NSE stock candles first and fetch only uncovered regular-session windows."""
 from __future__ import annotations
 
-from collections import Counter
-from datetime import timedelta
+from collections import Counter, defaultdict
+from collections.abc import Iterable
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
+from decimal import Decimal
 
 from orderbot.broker.history import HistoryCache, HistoryError, parse_minutes
-from orderbot.core.config import Config
+from orderbot.core.config import Config, MarketConfig
 from orderbot.core.ist_time import as_ist
 
 from . import candle_store
-from .candle_builder import MINUTE, TradingSession
+from .candle_builder import MINUTE, Candle, TradingSession
+
+
+@dataclass(frozen=True, slots=True)
+class StockCandleDay:
+    session: TradingSession
+    candles: tuple[Candle, ...]
+
+    def missing_minutes(self, through: datetime | None = None) -> tuple[datetime, ...]:
+        start, end = self.session.opens_at, self.session.closes_at
+        if through is not None:
+            end = min(end, as_ist(through))
+        seen = {bar.at for bar in self.candles}
+        return tuple(at for step in range((end - start) // MINUTE)
+                     if (at := start + step * MINUTE) not in seen)
+
+    @property
+    def close(self) -> Decimal | None:
+        last = self.candles[-1]
+        return last.close if last.at + MINUTE == self.session.closes_at else None
+
+
+def stock_candle_days(candles: Iterable[Candle], market: MarketConfig) -> tuple[StockCandleDay, ...]:
+    """Group observed regular-session candles. Holidays and absent rows are left out."""
+    groups: dict[date, list[Candle]] = defaultdict(list)
+    for candle in candles:
+        groups[as_ist(candle.at).date()].append(candle)
+    result = []
+    for day, observed in sorted(groups.items()):
+        if day.weekday() >= 5:
+            continue
+        session = TradingSession.from_config(day, market, segment="cash")
+        bars = tuple(sorted((bar for bar in observed if session.contains(bar.at)), key=lambda bar: bar.at))
+        if bars:
+            result.append(StockCandleDay(session, bars))
+    return tuple(result)
 
 
 class StockHistory:

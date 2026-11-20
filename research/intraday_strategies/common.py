@@ -9,11 +9,13 @@ per trade inside a fixed position size, no leverage.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 from decimal import Decimal
 from itertools import groupby
 
 from orderbot.core.config import Config, MarketConfig
 from orderbot.core.ist_time import parse_timestamp
+from orderbot.data.candle_builder import MINUTE, TradingSession
 from orderbot.strategy.stock_paper import intraday_charges
 
 TICK = 0.05
@@ -97,7 +99,17 @@ def build_days(rows: list, sizes=(1, 5, 15), *, market: MarketConfig | None = No
             continue
         day = at.date().isoformat()
         if not days or days[-1].date != day:
-            days.append(Day(day, [], days[-1].minutes[-1].close if days else None, list(days)))
+            previous_close = None
+            if days:
+                prior = days[-1]
+                final_minute = "15:29"
+                if market is not None:
+                    prior_session = TradingSession.from_config(date.fromisoformat(prior.date), market, segment="cash")
+                    final_minute = (prior_session.closes_at - MINUTE).strftime("%H:%M")
+                if prior.minutes[-1].clock == final_minute and (
+                        len(prior.minutes) == 1 or prior.minutes[-2].clock != final_minute):
+                    previous_close = prior.minutes[-1].close
+            days.append(Day(day, [], previous_close, list(days)))
         minutes = days[-1].minutes
         minutes.append(Bar(clock, float(opened), float(high), float(low), float(close), int(volume), len(minutes)))
     for size in sizes:
@@ -106,7 +118,11 @@ def build_days(rows: list, sizes=(1, 5, 15), *, market: MarketConfig | None = No
         for day in days:
             bars = _aggregate(day.minutes, size)
             with_rsi = []
+            previous_clock = None
             for bar in bars:
+                if previous_clock is not None and _offset(bar.clock) - _offset(previous_clock) != size:
+                    gain = loss = previous = None
+                    count = 0
                 rsi = None
                 if previous is not None:
                     change = bar.close - previous
@@ -119,6 +135,7 @@ def build_days(rows: list, sizes=(1, 5, 15), *, market: MarketConfig | None = No
                     if count >= 14:
                         rsi = 100 * gain / (gain + loss) if gain + loss else 50.0
                 previous = bar.close
+                previous_clock = bar.clock
                 with_rsi.append(Bar(bar.clock, bar.open, bar.high, bar.low, bar.close, bar.volume, bar.end, rsi))
             day._cache[size] = with_rsi
     return days
@@ -143,9 +160,11 @@ def simulate(days: list[Day], plans, config: Config, *, risk: float | None = Non
             quantity = int(min(risk / distance, slot / entry)) if distance > 0 else 0
             if quantity < 1 or plan.side * (entry - plan.stop) <= 0:
                 continue
-            exit_price, reason, index = day.minutes[-1].close, "close", len(day.minutes) - 1
+            exit_price, reason = None, None
             for index in range(plan.at + 1, len(day.minutes)):
                 bar = day.minutes[index]
+                if _offset(bar.clock) - _offset(day.minutes[index - 1].clock) != 1:
+                    break  # the absent candle could have hit the stop or target first
                 adverse, favourable = (bar.low, bar.high) if plan.side > 0 else (bar.high, bar.low)
                 if bar.clock >= plan.time_exit:
                     exit_price, reason = bar.open, "time"
@@ -159,6 +178,8 @@ def simulate(days: list[Day], plans, config: Config, *, risk: float | None = Non
                 if plan.exit_at is not None and index >= plan.exit_at:
                     exit_price, reason = bar.close - plan.side * TICK, "rule"
                     break
+            if exit_price is None:
+                break  # an unresolved position also makes later entries for this session untestable
             buy, sell = (entry, exit_price) if plan.side > 0 else (exit_price, entry)
             charges = float(intraday_charges(Decimal(str(round(buy, 2))), Decimal(str(round(sell, 2))), quantity, config))
             gross = (sell - buy) * quantity

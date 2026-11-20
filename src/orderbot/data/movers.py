@@ -16,7 +16,7 @@ from orderbot.broker.history import HistoryCache, HistoryError, encode_minutes, 
 from orderbot.broker.instruments import load_master
 from orderbot.core.ist_time import IST, as_ist, now_ist, parse_exchange_timestamp
 from orderbot.data.candle_builder import MINUTE, TradingSession, minute_floor
-from orderbot.data.stock_history import StockHistory
+from orderbot.data.stock_history import StockHistory, stock_candle_days
 from orderbot.data import candle_store
 from orderbot.strategy.stock_backtest import backtest
 from orderbot.core.activity import record
@@ -252,7 +252,7 @@ class MoversScanner:
         """Give the trader each stock's 14-day ATR and average opening volume and the day's watchlist, from a
         per-day file or SmartAPI history."""
         stocks, market = self.config.stocks, self.config.market
-        target = self.directory / self.config.data.history_cache_dir / f"stock-baselines-regular-{day.isoformat()}.json"
+        target = self.directory / self.config.data.history_cache_dir / f"stock-baselines-complete-{day.isoformat()}.json"
         try:
             saved = json.loads(target.read_text(encoding="utf-8"))
             found, watchlist = saved["baselines"], saved["watchlist"]
@@ -275,7 +275,7 @@ class MoversScanner:
                 except HistoryError as exc:
                     record("14-day history", f"{symbol}: {exc}", error=True)
                     continue
-                history[symbol] = daily_stats(encode_minutes(candles), market.session_open, stocks.sip_range_minutes)
+                history[symbol] = daily_stats(stock_candle_days(candles, market), stocks.sip_range_minutes)
                 item = baseline(history[symbol], day.isoformat(), stocks.sip_baseline_days)
                 if item:
                     found[symbol] = [str(item[0]), str(item[1])]
@@ -497,7 +497,7 @@ class MoversScanner:
             if not candles[symbol]:
                 raise ValueError(f"No stock candle data is available for {symbol} in that range.")
             record("Backtest", f"Loaded candles for {symbol} ({len(candles)} of {len(symbols)})")
-        result = backtest(config, candles, start)
+        result = backtest(config, candles, start, through=finish)
         record("Backtest", f"Finished · {len(result['trades'])} trades over {result['sessions']} sessions")
         self._remember(result, config)
         return result

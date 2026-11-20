@@ -138,7 +138,7 @@ def test_manual_trade_stats_and_backtest_reuse_the_live_rules(tmp_path):
     # a 09:15-09:29 range of 199.95-201 with the open at the low, a break at 09:30 and the target hit at 09:32.
     def candle(day, clock, opened, high, low, close):
         return [f"2026-{day}T{clock}:00+05:30", opened, high, low, close, 10_000]
-    rows = [candle("11-27", "15:29", 199, 199, 199, 199)]
+    rows = [candle("11-27", "15:14", 199, 199, 199, 199)]
     rows += [candle("11-30", f"09:{minute}", 200, 201, 199.95, 200.5) for minute in range(15, 30)]
     rows += [candle("11-30", "09:30", 200.5, 201.2, 200.5, 201.2), candle("11-30", "09:31", 201.2, 202, 201.2, 202),
              candle("11-30", "09:32", 202, 203.2, 202, 203.15)]
@@ -150,12 +150,24 @@ def test_manual_trade_stats_and_backtest_reuse_the_live_rules(tmp_path):
 
 
 def test_stocks_in_play_ranks_by_opening_volume_and_holds_to_square_off(tmp_path):
+    from orderbot.broker.history import parse_minutes
+    from orderbot.data.candle_builder import TradingSession
+    from orderbot.data.stock_history import stock_candle_days
     from orderbot.strategy.stock_paper import baseline, daily_stats
 
-    # Two sessions of two candles: true ranges 4 and 6 (the second gaps above the first close), opening volumes 100 and 300.
+    # Two complete sessions with two nonzero-volume candles each.
     rows = [["2026-11-26T09:15:00+05:30", 100, 102, 99, 101, 100], ["2026-11-26T09:20:00+05:30", 101, 103, 100, 102, 50],
             ["2026-11-27T09:15:00+05:30", 104, 108, 104, 107, 300], ["2026-11-27T09:21:00+05:30", 107, 107, 105, 106, 70]]
-    stats = daily_stats(rows, CONFIG.market.session_open, 5)
+    observed = {row[0]: row for row in rows}
+    dates = [parse_timestamp(rows[index][0]).date() for index in (0, 2)]
+    bars = []
+    for day, close in zip(dates, (102, 106)):
+        session = TradingSession.from_config(day, CONFIG.market, segment="cash")
+        stamps = [(session.opens_at + offset * MINUTE).isoformat()
+                  for offset in range((session.closes_at - session.opens_at) // MINUTE)]
+        bars.extend(parse_minutes([observed.get(stamp, [stamp, close, close, close, close, 0]) for stamp in stamps],
+                                  session.opens_at, session.closes_at))
+    stats = daily_stats(stock_candle_days(bars, CONFIG.market), 5)
     assert stats == [("2026-11-26", 4.0, 100, 102.0, 150), ("2026-11-27", 6.0, 300, 106.0, 370)]
     assert baseline(stats, "2026-11-30", 2) == (Decimal("5.0"), Decimal("200.0")) and baseline(stats, "2026-11-27", 2) is None
 

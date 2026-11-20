@@ -670,6 +670,13 @@ byId('backtest-form').addEventListener('submit', async (event) => {
     ]), 8, 'No trades were triggered in this range.');
     message.textContent = result.sessions ? `Done. ${result.trades.length} trades over ${result.sessions} sessions.` :
       'No market sessions with data in that range.';
+    if (result.skipped_windows?.length) {
+      const symbols = [...new Set(result.skipped_windows.map((window) => window.symbol))];
+      message.textContent += ` Skipped ${result.skipped_windows.length} stock-session windows after missing candles (${symbols.join(', ')}).`;
+    }
+    if (result.unverified_trades?.length) {
+      message.textContent += ` Excluded ${result.unverified_trades.length} trades with unverified exits from P&L.`;
+    }
   } catch (error) {
     message.textContent = error.message;
   } finally {

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 import json
 from pathlib import Path
@@ -20,6 +20,7 @@ from orderbot.core.config import Config, StocksConfig
 from orderbot.core.ist_time import as_ist, from_storage, parse_exchange_timestamp, to_storage
 from orderbot.core.money import PAISA, round_inr
 from orderbot.core.state_store import open_store
+from orderbot.data.candle_builder import MINUTE
 from orderbot.data.indicators import WilderAverage
 from orderbot.reporting.alerts import queue_alert
 
@@ -31,7 +32,6 @@ FREEZE_GRACE = timedelta(minutes=2)
 SETTING_KEYS = ("capital_inr", "risk_per_trade_pct", "max_positions", "sip_entries", "vwap_entries", "exit_on_rsi",
                 "exit_on_vwap_cross", "watchlist_only")
 MAX_RISK_PCT = Decimal("2")  # the Settings screen cannot raise risk per trade beyond this
-MAX_SAMPLE_GAP = timedelta(seconds=150)
 
 
 def intraday_charges(buy: Decimal, sell: Decimal, quantity: int, config: Config) -> Decimal:
@@ -52,24 +52,21 @@ def _stock_charges(buys: list[Decimal], sells: list[Decimal], config: Config) ->
     ))
 
 
-def daily_stats(rows, session_open: time, range_minutes: int) -> list[tuple[str, float, int]]:
-    """Per session in SmartAPI minute rows [stamp, open, high, low, close, volume]:
-    (day, true range, opening-range volume, close, volume)."""
-    total = session_open.hour * 60 + session_open.minute + range_minutes
-    cutoff = f"{total // 60:02d}:{total % 60:02d}"
-    sessions, previous_close = [], None
-    for stamp, _, high, low, close, volume in rows:
-        high, low, close = float(high), float(low), float(close)
-        if not sessions or sessions[-1][0] != stamp[:10]:
-            if sessions:
-                previous_close = sessions[-1][3]
-            sessions.append([stamp[:10], high, low, close, 0, previous_close, 0])
-        item = sessions[-1]
-        item[1], item[2], item[3], item[6] = max(item[1], high), min(item[2], low), close, item[6] + int(volume)
-        if stamp[11:16] < cutoff:
-            item[4] += int(volume)
-    return [(day, high - low if before is None else max(high - low, abs(high - before), abs(low - before)), opening, close, total)
-            for day, high, low, close, opening, before, total in sessions]
+def daily_stats(days, range_minutes: int) -> list[tuple[str, float, int, float, int]]:
+    """Use complete cash sessions for ATR, opening volume and watchlist statistics."""
+    stats, previous_close = [], None
+    for index, day in enumerate(days):
+        if not day.missing_minutes() and (index == 0 or previous_close is not None):
+            high = max(bar.high for bar in day.candles)
+            low = min(bar.low for bar in day.candles)
+            true_range = high - low
+            if previous_close is not None:
+                true_range = max(true_range, abs(high - previous_close), abs(low - previous_close))
+            opening = sum(bar.volume for bar in day.candles[:range_minutes])
+            stats.append((day.session.day.isoformat(), float(true_range), opening, float(day.close),
+                          sum(bar.volume for bar in day.candles)))
+        previous_close = day.close
+    return stats
 
 
 def watch_scores(stats_by_symbol: dict[str, list], before: str, period: int, size: int) -> list[dict]:
@@ -286,21 +283,25 @@ class StockPaperTrader:
                 and tick.at.date() == now.date()
                 and timedelta(0) <= now - tick.at <= timedelta(seconds=self.config.stocks.max_quote_age_seconds))
 
-    def on_scan(self, quotes, universe: dict[str, str], at: datetime) -> None:
+    def on_scan(self, quotes, universe: dict[str, str], at: datetime, *, allow_entries=True) -> None:
         with self._lock, open_store(self.db) as connection:
             now = as_ist(at)
             ticks = self._parse(quotes, universe, now)
             self._names = universe
             if self._session_open(now) and (self._first_scan is None or self._first_scan.date() != now.date()):
                 self._first_scan = now
-            if self._last_at is None or now.date() != self._last_at.date() or now - self._last_at > MAX_SAMPLE_GAP:
+            if self._last_at is None or now.date() != self._last_at.date() or now - self._last_at >= 2 * MINUTE:
                 self._series.clear()
+            else:
+                self._series = {token: series for token, series in self._series.items() if token in ticks}
             self._last_at, self._ticks = now, ticks
             for tick in ticks.values():
                 self._series.setdefault(tick.token, _Series(self.config)).add(tick)
                 self._marks[tick.token] = tick.ltp
             connection.execute("BEGIN IMMEDIATE")
             day, halted, square_off = self._exits(connection, ticks, now, signals=True)
+            if not allow_entries:
+                return
             ticks = {token: tick for token, tick in ticks.items() if tick.bids and tick.asks}
             if self.config.stocks.watchlist_only:  # entries only in today's watchlist; none until it is ready
                 names = {row["symbol"] for row in self.watchlist} if self._baseline_day == now.date() else set()

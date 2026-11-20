@@ -1,5 +1,5 @@
 """Strategy 6: Gap and go."""
-from .common import Day, Plan, average
+from .common import Day, Plan, _offset, average
 
 NAME = "Gap and go"
 RULES = """
@@ -34,7 +34,14 @@ def plans(day: Day) -> list[Plan]:
         (high < day.previous_close and opening.close <= opening.open)
     if not held:
         return []
+    expected = _offset(opening.clock) + 5
     for bar in day.bars(5):
-        if bar.clock >= "09:30" and side * (bar.close - (high if side > 0 else low)) > 0:
+        offset = _offset(bar.clock)
+        if offset < expected:
+            continue
+        if offset > expected:
+            break  # a missing bar could have contained the first breakout
+        if side * (bar.close - (high if side > 0 else low)) > 0:
             return [Plan(bar.end, side, low if side > 0 else high)]
+        expected += 5
     return []
